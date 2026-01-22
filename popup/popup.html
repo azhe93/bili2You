@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bili2You</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🎬</span>
+                <h1>Bili2You</h1>
+            </div>
+            <p class="subtitle">B站弹幕 → YouTube</p>
+        </header>
+
+        <!-- Page Info Section (Auto-detected) -->
+        <section id="pageInfoSection" class="page-info-section">
+            <div class="page-info-row">
+                <span class="label">频道:</span>
+                <span id="channelName" class="value">检测中...</span>
+            </div>
+            <div class="page-info-row">
+                <span class="label">视频:</span>
+                <span id="videoTitle" class="value ellipsis">检测中...</span>
+            </div>
+        </section>
+
+        <!-- Uploader Mapping Section -->
+        <section id="uploaderSection" class="uploader-section hidden">
+            <h3 class="section-title">关联B站UP主</h3>
+            <div id="uploaderMapping" class="uploader-mapping">
+                <div id="mappedUploader" class="mapped-uploader hidden">
+                    <img id="mappedUploaderAvatar" class="up-avatar" src="" alt="">
+                    <span id="mappedUploaderName" class="up-name"></span>
+                    <button id="changeUploader" class="btn-small">更换</button>
+                </div>
+                <div id="uploaderSearch" class="uploader-search">
+                    <input type="text" id="uploaderSearchInput" placeholder="搜索B站UP主...">
+                    <button id="uploaderSearchBtn" class="btn-search-small">搜索</button>
+                </div>
+                <div id="uploaderResults" class="uploader-results hidden"></div>
+            </div>
+        </section>
+
+        <!-- Video Match Section -->
+        <section id="videoMatchSection" class="video-match-section hidden">
+            <h3 class="section-title">
+                <span>匹配视频</span>
+                <span id="matchStatus" class="match-status"></span>
+            </h3>
+            <div id="matchedVideo" class="matched-video hidden">
+                <img id="matchedThumb" class="matched-thumb" src="" alt="">
+                <div class="matched-info">
+                    <div id="matchedTitle" class="matched-title"></div>
+                    <div class="matched-meta">
+                        <span id="matchedScore" class="match-score"></span>
+                        <span id="matchedDanmaku" class="danmaku-count"></span>
+                    </div>
+                </div>
+                <button id="changeVideo" class="btn-small">更换</button>
+            </div>
+            <div id="videoSearch" class="video-search hidden">
+                <input type="text" id="videoSearchInput" placeholder="搜索B站视频...">
+                <button id="videoSearchBtn" class="btn-search-small">搜索</button>
+            </div>
+            <div id="videoResults" class="video-results hidden"></div>
+            <button id="loadDanmakuBtn" class="btn-primary hidden">加载弹幕</button>
+        </section>
+
+        <!-- Current Danmaku Status -->
+        <section id="danmakuStatus" class="danmaku-status hidden">
+            <div class="status-row">
+                <span class="status-icon">✓</span>
+                <span id="statusText">已加载弹幕</span>
+            </div>
+            <!-- Danmaku Preview List -->
+            <div id="danmakuPreview" class="danmaku-preview">
+                <div class="preview-header">
+                    <span class="preview-count" id="previewCount">共 0 条</span>
+                </div>
+                <div id="danmakuList" class="danmaku-list"></div>
+            </div>
+            <button id="clearDanmakuBtn" class="btn-clear">清除弹幕</button>
+        </section>
+
+        <!-- Loading State -->
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <span id="loadingText">加载中...</span>
+        </div>
+
+        <!-- Settings Section -->
+        <section class="settings-section">
+            <h3 class="section-title">
+                <span>设置</span>
+                <button id="toggleSettings" class="btn-toggle">▼</button>
+            </h3>
+            <div id="settingsPanel" class="settings-panel hidden">
+                <!-- Time Offset -->
+                <div class="setting-item">
+                    <label>时间偏移</label>
+                    <div class="offset-controls">
+                        <button id="offsetMinus" class="btn-offset">-1s</button>
+                        <input type="number" id="offsetInput" value="0" step="0.5">
+                        <button id="offsetPlus" class="btn-offset">+1s</button>
+                    </div>
+                </div>
+
+                <!-- Font Size -->
+                <div class="setting-item">
+                    <label>字体大小</label>
+                    <input type="range" id="fontSize" min="12" max="36" value="24">
+                    <span id="fontSizeValue">24px</span>
+                </div>
+
+                <!-- Opacity -->
+                <div class="setting-item">
+                    <label>不透明度</label>
+                    <input type="range" id="opacity" min="0.1" max="1" step="0.1" value="0.8">
+                    <span id="opacityValue">80%</span>
+                </div>
+
+                <!-- Speed -->
+                <div class="setting-item">
+                    <label>滚动速度</label>
+                    <input type="range" id="speed" min="5" max="20" value="10">
+                    <span id="speedValue">10s</span>
+                </div>
+
+                <!-- Screen Height -->
+                <div class="setting-item">
+                    <label>屏幕高度</label>
+                    <input type="range" id="screenHeight" min="20" max="100" step="10" value="80">
+                    <span id="screenHeightValue">80%</span>
+                </div>
+
+                <!-- Density -->
+                <div class="setting-item">
+                    <label>弹幕密度</label>
+                    <select id="density">
+                        <option value="1">全部</option>
+                        <option value="0.75">75%</option>
+                        <option value="0.5" selected>50%</option>
+                        <option value="0.25">25%</option>
+                    </select>
+                </div>
+
+                <!-- Toggle Danmaku -->
+                <div class="setting-item">
+                    <label>显示弹幕</label>
+                    <label class="switch">
+                        <input type="checkbox" id="showDanmaku" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+        </section>
+
+        <!-- Not on YouTube Message -->
+        <div id="notYouTube" class="not-youtube hidden">
+            <p>请在 YouTube 视频页面使用此扩展</p>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

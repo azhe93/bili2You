@@ -5,6 +5,10 @@
 const MAX_RETRIES = 5;
 const INITIAL_DELAY = 500; // 初始延迟500ms
 
+// 每个 tab 的加载版本号，用于取消过期的弹幕加载请求
+// key: tabId, value: 当前版本号（每次新请求时递增）
+const tabLoadVersion = {};
+
 async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
     let lastError;
 
@@ -102,7 +106,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'pageInfoReady') {
         const tabId = sender.tab?.id;
         if (tabId && request.pageInfo) {
-            tryAutoLoadDanmaku(tabId, request.pageInfo)
+            // 递增版本号，使同一 tab 上所有正在进行的旧请求失效
+            tabLoadVersion[tabId] = (tabLoadVersion[tabId] || 0) + 1;
+            const myVersion = tabLoadVersion[tabId];
+
+            tryAutoLoadDanmaku(tabId, request.pageInfo, myVersion)
                 .then(result => sendResponse(result))
                 .catch(error => {
                     console.log('Bili2You: Auto-load failed -', error.message);
@@ -118,18 +126,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============ 自动加载弹幕逻辑 ============
 
 // 尝试自动加载弹幕
-async function tryAutoLoadDanmaku(tabId, pageInfo) {
+async function tryAutoLoadDanmaku(tabId, pageInfo, version) {
     const { channelName, videoTitle, videoId } = pageInfo;
+
+    // 辅助函数：检查当前请求是否仍然有效（未被更新的请求取代）
+    function isStale() {
+        return tabLoadVersion[tabId] !== version;
+    }
 
     if (!channelName || !videoTitle) {
         console.log('Bili2You: Missing page info, skipping auto-load');
         return { success: false, reason: 'missing_info' };
     }
 
-    console.log(`Bili2You: Checking auto-load for channel "${channelName}", video "${videoTitle}"`);
+    console.log(`Bili2You: Checking auto-load for channel "${channelName}", video "${videoTitle}" (version ${version})`);
 
     // 从storage获取UP主映射
     const data = await chrome.storage.local.get(['uploaderMappings', 'settings']);
+    if (isStale()) {
+        console.log(`Bili2You: Tab ${tabId} switched video, discarding stale load (version ${version})`);
+        return { success: false, reason: 'stale' };
+    }
+
     const uploaderMappings = data.uploaderMappings || {};
     const settings = data.settings || {};
 
@@ -147,6 +165,11 @@ async function tryAutoLoadDanmaku(tabId, pageInfo) {
     const searchKeyword = `${uploader.name} ${cleanedTitle}`;
 
     const searchResult = await searchBilibiliVideos(searchKeyword);
+    if (isStale()) {
+        console.log(`Bili2You: Tab ${tabId} switched video, discarding stale search result (version ${version})`);
+        return { success: false, reason: 'stale' };
+    }
+
     if (!searchResult.results || searchResult.results.length === 0) {
         console.log('Bili2You: No matching videos found');
         return { success: false, reason: 'no_match' };
@@ -178,6 +201,11 @@ async function tryAutoLoadDanmaku(tabId, pageInfo) {
 
     // 获取视频信息以获取cid
     const videoInfo = await getVideoInfo(bestMatch.video.bvid);
+    if (isStale()) {
+        console.log(`Bili2You: Tab ${tabId} switched video, discarding stale video info (version ${version})`);
+        return { success: false, reason: 'stale' };
+    }
+
     if (!videoInfo.cid) {
         console.log('Bili2You: Failed to get video cid');
         return { success: false, reason: 'no_cid' };
@@ -185,6 +213,11 @@ async function tryAutoLoadDanmaku(tabId, pageInfo) {
 
     // 获取弹幕
     const danmakuData = await getDanmaku(videoInfo.cid);
+    if (isStale()) {
+        console.log(`Bili2You: Tab ${tabId} switched video, discarding stale danmaku (version ${version})`);
+        return { success: false, reason: 'stale' };
+    }
+
     if (!danmakuData.danmaku || danmakuData.danmaku.length === 0) {
         console.log('Bili2You: No danmaku found');
         return { success: false, reason: 'no_danmaku' };

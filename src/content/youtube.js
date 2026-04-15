@@ -83,34 +83,8 @@
         currentVideoId = videoId;
         console.log('Bili2You: Video page detected, attempting auto-load...');
 
-        // 延迟提取页面信息（等待页面完全加载）
-        setTimeout(() => {
-            const pageInfo = extractPageInfo();
-
-            if (pageInfo.channelName && pageInfo.videoTitle) {
-                console.log('Bili2You: Sending pageInfoReady for auto-load');
-                chrome.runtime.sendMessage({
-                    action: 'pageInfoReady',
-                    pageInfo: pageInfo
-                }).then(result => {
-                    if (result && result.success) {
-                        console.log(`Bili2You: Auto-loaded ${result.danmakuCount} danmaku for "${result.video}"`);
-                    }
-                }).catch(() => { });
-            } else {
-                // 如果信息不完整，再等一会儿重试
-                setTimeout(() => {
-                    const retryInfo = extractPageInfo();
-                    if (retryInfo.channelName && retryInfo.videoTitle) {
-                        console.log('Bili2You: Retry - Sending pageInfoReady for auto-load');
-                        chrome.runtime.sendMessage({
-                            action: 'pageInfoReady',
-                            pageInfo: retryInfo
-                        }).catch(() => { });
-                    }
-                }, 2000);
-            }
-        }, 2500);
+        // 使用统一的等待机制
+        waitForPageInfoAndAutoLoad(videoId);
     }
 
 
@@ -196,19 +170,57 @@
                         videoId: newVideoId
                     }).catch(() => { });
 
-                    // 延迟提取页面信息（等待页面加载）
-                    setTimeout(() => {
-                        const pageInfo = extractPageInfo();
-                        chrome.runtime.sendMessage({
-                            action: 'pageInfoReady',
-                            pageInfo: pageInfo
-                        }).catch(() => { });
-                    }, 2000);
+                    // 等待页面信息更新后再自动加载弹幕
+                    waitForPageInfoAndAutoLoad(newVideoId);
                 }
             }
         });
 
         observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // 等待页面信息更新并自动加载弹幕
+    function waitForPageInfoAndAutoLoad(expectedVideoId) {
+        let attempts = 0;
+        const maxAttempts = 10;
+        const checkInterval = 500;
+
+        function checkAndLoad() {
+            attempts++;
+
+            // 确认当前 URL 仍然是期望的视频（用户可能又切换了）
+            const url = new URL(location.href);
+            const currentUrlVideoId = url.searchParams.get('v');
+
+            if (currentUrlVideoId !== expectedVideoId) {
+                console.log('Bili2You: Video changed during wait, aborting');
+                return;
+            }
+
+            const pageInfo = extractPageInfo();
+
+            // 检查是否获取到完整信息，并且视频ID匹配
+            if (pageInfo.channelName && pageInfo.videoTitle && pageInfo.videoId === expectedVideoId) {
+                console.log('Bili2You: Page info ready, sending for auto-load');
+                chrome.runtime.sendMessage({
+                    action: 'pageInfoReady',
+                    pageInfo: pageInfo
+                }).then(result => {
+                    if (result && result.success) {
+                        console.log(`Bili2You: Auto-loaded ${result.danmakuCount} danmaku for "${result.video}"`);
+                    }
+                }).catch(() => { });
+            } else if (attempts < maxAttempts) {
+                // 信息不完整，继续等待
+                console.log(`Bili2You: Page info incomplete (attempt ${attempts}/${maxAttempts}), retrying...`);
+                setTimeout(checkAndLoad, checkInterval);
+            } else {
+                console.log('Bili2You: Failed to get complete page info after max attempts');
+            }
+        }
+
+        // 首次检查延迟较短
+        setTimeout(checkAndLoad, 500);
     }
 
     // 从storage加载设置

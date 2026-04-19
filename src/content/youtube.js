@@ -10,6 +10,7 @@
         opacity: 0.8,
         speed: 10,
         density: 0.5,
+        screenHeight: 80, // 滚动弹幕可用屏幕高度百分比（20-100）
         show: true
     };
 
@@ -25,6 +26,12 @@
     let tracks = []; // 弹幕轨道
     let animationFrameId = null;
     let currentVideoId = null;
+    // 最近一次向 background 派发 pageInfoReady 所用的标题：下次 URL 切换时作为"旧基线"，
+    // 要求新的 DOM 标题必须与它不同才允许触发自动加载。用状态变量而非观察时刻的 DOM，
+    // 避开 MutationObserver 回调运行时 DOM 可能已经同步更新为新标题的竞态。
+    let lastDispatchedTitle = '';
+    // 已经为哪个 videoId 触发过自动加载。按"视频开始播放"驱动一次性触发，避免 pause/resume 重复触发
+    let autoLoadedForVideoId = null;
 
     // 初始化
     function init() {
@@ -33,6 +40,15 @@
         // 监听来自popup/background的消息
         chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             if (request.action === 'loadDanmaku') {
+                // 校验弹幕是否属于当前视频，防止切换视频时旧请求的弹幕覆盖新视频
+                if (request.videoId) {
+                    const urlVideoId = new URL(location.href).searchParams.get('v');
+                    if (request.videoId !== urlVideoId) {
+                        console.log(`Bili2You: Ignoring stale danmaku for ${request.videoId}, current URL is ${urlVideoId}`);
+                        sendResponse({ success: false, reason: 'stale' });
+                        return true;
+                    }
+                }
                 loadDanmaku(request.danmaku, request.offset);
                 sendResponse({ success: true });
             }
@@ -66,27 +82,9 @@
         // 从storage加载设置
         loadSettingsFromStorage();
 
-        // 首次加载时尝试自动加载弹幕
-        tryInitialAutoLoad();
+        // 不在此做首次自动加载：等视频元素就绪且真正开始播放后，由 onPlay 触发。
+        // 这样可以跳过 YouTube SPA 的 URL/DOM 切换竞态，拿到稳定的 channelName/videoTitle。
     }
-
-    // 首次加载时尝试自动加载弹幕
-    function tryInitialAutoLoad() {
-        const url = new URL(location.href);
-        const videoId = url.searchParams.get('v');
-
-        if (!videoId) {
-            console.log('Bili2You: Not a video page, skipping auto-load');
-            return;
-        }
-
-        currentVideoId = videoId;
-        console.log('Bili2You: Video page detected, attempting auto-load...');
-
-        // 使用统一的等待机制
-        waitForPageInfoAndAutoLoad(videoId);
-    }
-
 
     // 提取页面信息
     function extractPageInfo() {
@@ -164,14 +162,16 @@
                 if (newVideoId && newVideoId !== currentVideoId) {
                     currentVideoId = newVideoId;
 
+                    // 立即通知 background 取消任何进行中的旧弹幕加载请求
+                    chrome.runtime.sendMessage({ action: 'cancelAutoLoad' }).catch(() => { });
+
                     // 通知popup页面URL变化
                     chrome.runtime.sendMessage({
                         action: 'urlChanged',
                         videoId: newVideoId
                     }).catch(() => { });
 
-                    // 等待页面信息更新后再自动加载弹幕
-                    waitForPageInfoAndAutoLoad(newVideoId);
+                    // 不在此启动搜索+加载流程：等 onPlay 里"视频真正开始播放"时再触发
                 }
             }
         });
@@ -180,9 +180,9 @@
     }
 
     // 等待页面信息更新并自动加载弹幕
-    function waitForPageInfoAndAutoLoad(expectedVideoId) {
+    function waitForPageInfoAndAutoLoad(expectedVideoId, previousTitle = '') {
         let attempts = 0;
-        const maxAttempts = 10;
+        const maxAttempts = 20;
         const checkInterval = 500;
 
         function checkAndLoad() {
@@ -199,9 +199,13 @@
 
             const pageInfo = extractPageInfo();
 
+            // 标题必须已从旧视频切换为新值，否则视为 DOM 陈旧状态
+            const titleReady = pageInfo.videoTitle && pageInfo.videoTitle !== previousTitle;
+
             // 检查是否获取到完整信息，并且视频ID匹配
-            if (pageInfo.channelName && pageInfo.videoTitle && pageInfo.videoId === expectedVideoId) {
+            if (pageInfo.channelName && titleReady && pageInfo.videoId === expectedVideoId) {
                 console.log('Bili2You: Page info ready, sending for auto-load');
+                lastDispatchedTitle = pageInfo.videoTitle;
                 chrome.runtime.sendMessage({
                     action: 'pageInfoReady',
                     pageInfo: pageInfo
@@ -212,7 +216,8 @@
                 }).catch(() => { });
             } else if (attempts < maxAttempts) {
                 // 信息不完整，继续等待
-                console.log(`Bili2You: Page info incomplete (attempt ${attempts}/${maxAttempts}), retrying...`);
+                const stale = previousTitle && pageInfo.videoTitle === previousTitle ? ' (title still stale)' : '';
+                console.log(`Bili2You: Page info incomplete (attempt ${attempts}/${maxAttempts})${stale}, retrying...`);
                 setTimeout(checkAndLoad, checkInterval);
             } else {
                 console.log('Bili2You: Failed to get complete page info after max attempts');
@@ -327,7 +332,9 @@
 
         const height = danmakuContainer.offsetHeight;
         const trackHeight = settings.fontSize + 4;
-        const trackCount = Math.floor((height * 0.8) / trackHeight); // 只使用上方80%的空间
+        // 只使用上方 screenHeight% 的空间给滚动弹幕
+        const ratio = Math.max(20, Math.min(100, settings.screenHeight || 80)) / 100;
+        const trackCount = Math.floor((height * ratio) / trackHeight);
 
         tracks = [];
         for (let i = 0; i < trackCount; i++) {
@@ -358,6 +365,7 @@
     // 更新设置
     function updateSettings(newSettings) {
         settings = { ...settings, ...newSettings };
+        console.log('Bili2You: Settings updated', settings);
         updateTracks();
 
         // 更新现有弹幕的样式
@@ -379,6 +387,17 @@
         console.log('Bili2You: Video playing');
         isPlaying = true;
         startRenderLoop();
+
+        // 视频真正开始播放 → 此时 YouTube 的 SPA 切换已经稳定，DOM 标题/频道信息可靠
+        const urlVideoId = new URL(location.href).searchParams.get('v');
+        if (urlVideoId && urlVideoId !== autoLoadedForVideoId) {
+            autoLoadedForVideoId = urlVideoId;
+            // currentVideoId 保持与 observeUrlChange 的语义一致
+            if (currentVideoId !== urlVideoId) {
+                currentVideoId = urlVideoId;
+            }
+            waitForPageInfoAndAutoLoad(urlVideoId, lastDispatchedTitle);
+        }
     }
 
     // 暂停事件
@@ -470,17 +489,20 @@
                     continue;
                 }
 
-                // 每帧发射弹幕数量限制
+                // 密度过滤放在帧上限之前：被密度过滤掉的不占用帧预算，
+                // 否则密度在弹幕洪峰期会被帧上限吃掉，看起来没生效
+                if (Math.random() >= settings.density) {
+                    danmakuIndex++;
+                    continue;
+                }
+
+                // 每帧发射弹幕数量限制（仅统计真正发射的）
                 if (danmakuFiredThisFrame >= maxDanmakuPerFrame) {
                     break; // 剩余弹幕下一帧继续处理
                 }
 
-                // 根据密度随机过滤
-                if (Math.random() < settings.density) {
-                    fireDanmaku(danmaku);
-                    danmakuFiredThisFrame++;
-                }
-
+                fireDanmaku(danmaku);
+                danmakuFiredThisFrame++;
                 danmakuIndex++;
             }
 
@@ -571,7 +593,8 @@
                 const travelTime = (containerWidth / (containerWidth + danmakuWidth)) * duration;
                 tracks[trackIndex].endTime = now + travelTime;
             } else {
-                y = Math.random() * (danmakuContainer.offsetHeight * 0.7);
+                const ratio = Math.max(20, Math.min(100, settings.screenHeight || 80)) / 100;
+                y = Math.random() * (danmakuContainer.offsetHeight * ratio);
             }
 
             startX = containerWidth;

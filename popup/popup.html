@@ -10,15 +10,6 @@
 
 <body>
     <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <div class="logo">
-                <span class="logo-icon">🎬</span>
-                <h1>Bili2You</h1>
-            </div>
-            <p class="subtitle">B站弹幕 → YouTube</p>
-        </header>
-
         <!-- Page Info Section (Auto-detected) -->
         <section id="pageInfoSection" class="page-info-section">
             <div class="page-info-row">
@@ -71,22 +62,14 @@
             </div>
             <div id="videoResults" class="video-results hidden"></div>
             <button id="loadDanmakuBtn" class="btn-primary hidden">加载弹幕</button>
-        </section>
-
-        <!-- Current Danmaku Status -->
-        <section id="danmakuStatus" class="danmaku-status hidden">
-            <div class="status-row">
-                <span class="status-icon">✓</span>
-                <span id="statusText">已加载弹幕</span>
+            <!-- Toggle Danmaku (moved out of settings for quick access) -->
+            <div class="setting-item setting-item-inline">
+                <label>显示弹幕</label>
+                <label class="switch">
+                    <input type="checkbox" id="showDanmaku" checked>
+                    <span class="slider"></span>
+                </label>
             </div>
-            <!-- Danmaku Preview List -->
-            <div id="danmakuPreview" class="danmaku-preview">
-                <div class="preview-header">
-                    <span class="preview-count" id="previewCount">共 0 条</span>
-                </div>
-                <div id="danmakuList" class="danmaku-list"></div>
-            </div>
-            <button id="clearDanmakuBtn" class="btn-clear">清除弹幕</button>
         </section>
 
         <!-- Loading State -->
@@ -150,15 +133,6 @@
                         <option value="0.25">25%</option>
                     </select>
                 </div>
-
-                <!-- Toggle Danmaku -->
-                <div class="setting-item">
-                    <label>显示弹幕</label>
-                    <label class="switch">
-                        <input type="checkbox" id="showDanmaku" checked>
-                        <span class="slider"></span>
-                    </label>
-                </div>
             </div>
         </section>
 
@@ -168,6 +142,7 @@
         </div>
     </div>
 
+    <script src="../lib/opencc-t2cn.js"></script>
     <script src="popup.js"></script>
 </body>
 

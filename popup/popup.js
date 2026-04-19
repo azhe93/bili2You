@@ -1,5 +1,8 @@
 // Bili2You Popup Script - Auto-Match Feature
 
+// 繁→简字符级转换：与 background 保持一致，用 tw→cn 覆盖最常见的繁体输入
+const t2s = OpenCC.Converter({ from: 'tw', to: 'cn' });
+
 document.addEventListener('DOMContentLoaded', async () => {
     // DOM Elements - Page Info
     const channelNameEl = document.getElementById('channelName');
@@ -34,16 +37,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const loadDanmakuBtn = document.getElementById('loadDanmakuBtn');
 
     // DOM Elements - Status
-    const danmakuStatus = document.getElementById('danmakuStatus');
-    const statusText = document.getElementById('statusText');
-    const clearDanmakuBtn = document.getElementById('clearDanmakuBtn');
     const loading = document.getElementById('loading');
     const loadingText = document.getElementById('loadingText');
-
-    // DOM Elements - Danmaku Preview
-    const danmakuPreview = document.getElementById('danmakuPreview');
-    const previewCount = document.getElementById('previewCount');
-    const danmakuListEl = document.getElementById('danmakuList');
 
     // DOM Elements - Settings
     const toggleSettings = document.getElementById('toggleSettings');
@@ -68,11 +63,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentMatchedVideo = null;
     let currentDanmaku = null;
     let uploaderMappings = {}; // channelName -> biliUploader
-
-    // Virtual scroll state
-    let virtualScrollData = null;
-    const ITEM_HEIGHT = 32; // Height of each danmaku item in pixels
-    const BUFFER_SIZE = 10; // Number of extra items to render above/below viewport
 
     // Initialize
     await loadSettings();
@@ -152,12 +142,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Check if we have a cached uploader mapping
     async function checkUploaderMapping(channelName) {
-        // 如果当前视频已加载弹幕，直接显示状态
+        // 如果当前视频已加载弹幕，直接显示已匹配的UP主和视频
         if (currentDanmaku && currentMatchedVideo && currentPageInfo) {
             displayMappedUploader(currentUploader || uploaderMappings[channelName]);
             displayMatchedVideo(currentMatchedVideo, 1);
-            statusText.textContent = `已加载 ${currentDanmaku.length} 条弹幕`;
-            danmakuStatus.classList.remove('hidden');
             return;
         }
 
@@ -190,6 +178,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Search for Bilibili uploader
     async function searchUploader(keyword) {
         if (!keyword) return;
+        keyword = t2s(keyword);
 
         showLoading('搜索UP主...');
 
@@ -333,7 +322,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function cleanTitle(title) {
         // Remove common prefixes/suffixes and special characters
-        return title
+        return t2s(title)
             .toLowerCase()
             .replace(/【.*?】/g, '')
             .replace(/\[.*?\]/g, '')
@@ -345,7 +334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 清理搜索关键词，移除特殊字符和标点
     function sanitizeSearchKeyword(text) {
-        return text
+        return t2s(text || '')
             .replace(/【.*?】/g, ' ')
             .replace(/\[.*?\]/g, ' ')
             .replace(/（.*?）/g, ' ')
@@ -499,7 +488,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Get danmaku
             const danmakuData = await chrome.runtime.sendMessage({
                 action: 'getDanmaku',
-                cid: videoInfo.cid
+                cid: videoInfo.cid,
+                aid: videoInfo.aid,
+                duration: videoInfo.duration
             });
 
             if (danmakuData.error) {
@@ -512,15 +503,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             await chrome.runtime.sendMessage({
                 action: 'loadDanmakuToTab',
                 danmaku: currentDanmaku,
-                offset: parseFloat(offsetInput.value) || 0
+                offset: parseFloat(offsetInput.value) || 0,
+                videoId: currentPageInfo?.videoId
             });
-
-            // Show status
-            statusText.textContent = `已加载 ${currentDanmaku.length} 条弹幕`;
-            danmakuStatus.classList.remove('hidden');
-
-            // Auto-render danmaku list
-            renderDanmakuList(currentDanmaku);
 
             // Save current state
             await saveCurrentState();
@@ -560,17 +545,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     loadDanmakuBtn.addEventListener('click', loadDanmaku);
-
-    clearDanmakuBtn.addEventListener('click', async () => {
-        currentDanmaku = null;
-        danmakuStatus.classList.add('hidden');
-        danmakuListEl.innerHTML = '';
-
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab) {
-            chrome.tabs.sendMessage(tab.id, { action: 'clearDanmaku' });
-        }
-    });
 
     toggleSettings.addEventListener('click', () => {
         settingsPanel.classList.toggle('hidden');
@@ -630,7 +604,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             await chrome.runtime.sendMessage({
                 action: 'loadDanmakuToTab',
                 danmaku: currentDanmaku,
-                offset: offset
+                offset: offset,
+                videoId: currentPageInfo?.videoId
             });
         }
         await saveSettings();
@@ -745,97 +720,5 @@ document.addEventListener('DOMContentLoaded', async () => {
             return (num / 10000).toFixed(1) + '万';
         }
         return num ? num.toString() : '0';
-    }
-
-    // Format time from seconds to MM:SS
-    function formatTime(seconds) {
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    // Render danmaku list with virtual scrolling
-    function renderDanmakuList(danmakuData, isFiltered = false) {
-        danmakuListEl.innerHTML = '';
-        danmakuListEl.onscroll = null;
-
-        if (!danmakuData || danmakuData.length === 0) {
-            danmakuListEl.innerHTML = '<div class="danmaku-empty">暂无弹幕</div>';
-            previewCount.textContent = '共 0 条';
-            virtualScrollData = null;
-            return;
-        }
-
-        // Update count
-        if (isFiltered) {
-            previewCount.textContent = `匹配 ${danmakuData.length} 条`;
-        } else {
-            previewCount.textContent = `共 ${danmakuData.length} 条`;
-        }
-
-        // Sort by time
-        const sortedData = [...danmakuData].sort((a, b) => a.time - b.time);
-
-        // Store virtual scroll data
-        virtualScrollData = {
-            data: sortedData,
-            totalHeight: sortedData.length * ITEM_HEIGHT
-        };
-
-        // Create virtual scroll container
-        const scrollContent = document.createElement('div');
-        scrollContent.className = 'virtual-scroll-content';
-        scrollContent.style.height = `${virtualScrollData.totalHeight}px`;
-        scrollContent.style.position = 'relative';
-
-        danmakuListEl.appendChild(scrollContent);
-
-        // Initial render
-        updateVirtualScroll();
-
-        // Add scroll listener
-        danmakuListEl.onscroll = updateVirtualScroll;
-    }
-
-    // Update visible items based on scroll position
-    function updateVirtualScroll() {
-        if (!virtualScrollData) return;
-
-        const scrollTop = danmakuListEl.scrollTop;
-        const viewportHeight = danmakuListEl.clientHeight;
-
-        // Calculate visible range
-        const startIndex = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - BUFFER_SIZE);
-        const endIndex = Math.min(
-            virtualScrollData.data.length,
-            Math.ceil((scrollTop + viewportHeight) / ITEM_HEIGHT) + BUFFER_SIZE
-        );
-
-        // Get content container
-        const scrollContent = danmakuListEl.querySelector('.virtual-scroll-content');
-        if (!scrollContent) return;
-
-        // Clear and rebuild visible items
-        scrollContent.innerHTML = '';
-
-        const fragment = document.createDocumentFragment();
-
-        for (let i = startIndex; i < endIndex; i++) {
-            const d = virtualScrollData.data[i];
-            const item = document.createElement('div');
-            item.className = 'danmaku-item';
-            item.style.position = 'absolute';
-            item.style.top = `${i * ITEM_HEIGHT}px`;
-            item.style.left = '0';
-            item.style.right = '0';
-            item.style.height = `${ITEM_HEIGHT}px`;
-            item.innerHTML = `
-                <span class="danmaku-time">${formatTime(d.time)}</span>
-                <span class="danmaku-text">${escapeHtml(d.text)}</span>
-            `;
-            fragment.appendChild(item);
-        }
-
-        scrollContent.appendChild(fragment);
     }
 });

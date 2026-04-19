@@ -376,159 +376,6 @@ body {
     margin-top: 2px;
 }
 
-/* Danmaku Status */
-.danmaku-status {
-    background: rgba(0, 200, 83, 0.1);
-    border: 1px solid var(--success);
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 12px;
-}
-
-.status-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
-}
-
-.status-icon {
-    color: var(--success);
-    font-size: 16px;
-}
-
-#statusText {
-    font-size: 13px;
-}
-
-.btn-clear {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid var(--secondary);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--secondary);
-    font-size: 12px;
-    cursor: pointer;
-    transition: background 0.2s;
-}
-
-.btn-clear:hover {
-    background: rgba(251, 114, 153, 0.1);
-}
-
-/* Danmaku Preview */
-.preview-toggle-row {
-    margin-bottom: 10px;
-}
-
-.btn-preview-toggle {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-input);
-    color: var(--text-secondary);
-    font-size: 12px;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.btn-preview-toggle:hover {
-    border-color: var(--primary);
-    color: var(--primary);
-}
-
-.btn-preview-toggle.active {
-    border-color: var(--primary);
-    color: var(--primary);
-}
-
-.btn-preview-toggle .toggle-arrow {
-    transition: transform 0.2s;
-}
-
-.btn-preview-toggle.active .toggle-arrow {
-    transform: rotate(180deg);
-}
-
-.danmaku-preview {
-    margin-bottom: 10px;
-}
-
-.preview-header {
-    margin-bottom: 8px;
-}
-
-.preview-count {
-    font-size: 11px;
-    color: var(--text-secondary);
-    flex-shrink: 0;
-}
-
-.preview-search {
-    flex: 1;
-    padding: 5px 10px;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    background: var(--bg-input);
-    color: var(--text-primary);
-    font-size: 11px;
-    outline: none;
-}
-
-.danmaku-list {
-    max-height: 200px;
-    overflow-y: auto;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    background: var(--bg-input);
-}
-
-.danmaku-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--border-color);
-    font-size: 11px;
-    transition: background 0.2s;
-    box-sizing: border-box;
-}
-
-.danmaku-item:last-child {
-    border-bottom: none;
-}
-
-.danmaku-item:hover {
-    background: rgba(0, 161, 214, 0.1);
-}
-
-.danmaku-time {
-    flex-shrink: 0;
-    width: 45px;
-    color: var(--primary);
-    font-family: 'Consolas', monospace;
-    font-size: 10px;
-}
-
-.danmaku-text {
-    flex: 1;
-    color: var(--text-primary);
-    word-break: break-word;
-    line-height: 1.4;
-}
-
-.danmaku-empty {
-    padding: 20px;
-    text-align: center;
-    color: var(--text-secondary);
-    font-size: 12px;
-}
-
 /* Loading */
 .loading {
     display: flex;
@@ -635,6 +482,19 @@ body {
 
 .setting-item select {
     flex: 1;
+}
+
+.setting-item-inline {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-color);
+    justify-content: space-between;
+}
+
+.setting-item-inline label:first-child {
+    color: var(--text-primary);
+    font-size: 12px;
+    width: auto;
 }
 
 .setting-item span:last-child {

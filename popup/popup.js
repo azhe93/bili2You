@@ -90,7 +90,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 displayPageInfo(response);
 
                 // 检查是否有保存的状态（当前视频已加载弹幕）
-                if (window._savedVideoState && window._savedVideoState.videoId === response.videoId) {
+                const hasLoadedState = window._savedVideoState && window._savedVideoState.videoId === response.videoId;
+                if (hasLoadedState) {
                     const state = window._savedVideoState;
                     currentMatchedVideo = state.video;
                     currentDanmaku = { length: state.danmakuCount }; // 仅用于显示数量
@@ -98,7 +99,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     console.log('Bili2You: Restored saved state for video', response.videoId);
                 }
 
-                await checkUploaderMapping(response.channelName);
+                await checkUploaderMapping(response.channelName, hasLoadedState);
             } else {
                 // Retry after a short delay
                 setTimeout(async () => {
@@ -106,7 +107,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (retryResponse && retryResponse.channelName) {
                         currentPageInfo = retryResponse;
                         displayPageInfo(retryResponse);
-                        await checkUploaderMapping(retryResponse.channelName);
+                        const hasLoadedState = window._savedVideoState && window._savedVideoState.videoId === retryResponse.videoId;
+                        if (hasLoadedState) {
+                            const state = window._savedVideoState;
+                            currentMatchedVideo = state.video;
+                            currentDanmaku = { length: state.danmakuCount };
+                            currentUploader = uploaderMappings[retryResponse.channelName];
+                        }
+                        await checkUploaderMapping(retryResponse.channelName, hasLoadedState);
                     }
                 }, 1500);
             }
@@ -141,10 +149,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Check if we have a cached uploader mapping
-    async function checkUploaderMapping(channelName) {
-        // 如果当前视频已加载弹幕，直接显示已匹配的UP主和视频
-        if (currentDanmaku && currentMatchedVideo && currentPageInfo) {
-            displayMappedUploader(currentUploader || uploaderMappings[channelName]);
+    async function checkUploaderMapping(channelName, skipAutoMatch = false) {
+        // 如果当前视频已加载弹幕，直接显示已匹配的UP主和视频，不重新匹配
+        if (skipAutoMatch && currentDanmaku && currentMatchedVideo) {
+            if (currentUploader) {
+                displayMappedUploader(currentUploader);
+            }
             displayMatchedVideo(currentMatchedVideo, 1);
             return;
         }

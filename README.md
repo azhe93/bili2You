@@ -1,22 +1,19 @@
-# 🎬 Bili2You - B站弹幕同步到YouTube
-
-<p align="center">
-  <strong>将 Bilibili 弹幕同步到 YouTube 视频播放器的 Chrome 扩展</strong>
-</p>
-
----
+# Bili2You - YouTube 视频加载 B 站弹幕
 
 ## ✨ 功能特性
 
 ### 🔄 弹幕同步
 - 从 Bilibili 获取视频弹幕并在 YouTube 播放器上实时显示
-- 支持滚动弹幕、顶部弹幕、底部弹幕等多种弹幕模式
-- 保留原始弹幕颜色
+- 支持滚动弹幕（模式 1）、顶部固定弹幕（模式 5）、底部固定弹幕（模式 4）
+- 保留原始弹幕颜色与字号
+- 支持全屏模式下弹幕正常显示
 
 ### 🤖 智能匹配
-- **UP主映射**：建立 YouTube 频道与 B站 UP主的关联
+- **UP主映射**：建立 YouTube 频道与 B站 UP主的持久关联
 - **自动匹配**：根据视频标题自动搜索并匹配对应的 B站视频
-- **匹配度评分**：显示匹配置信度，高于 80% 自动加载弹幕
+- **匹配度评分**：基于 Jaccard 相似度算法（词级 + 字符级），支持繁简中文转换
+- **智能搜索策略**：优先在 UP主空间内搜索，匹配失败后回退到全站搜索
+- **匹配度 ≥ 80%** 自动加载弹幕，低于阈值时需手动确认
 - **手动搜索**：支持手动搜索并选择 B站视频
 
 ### ⚙️ 丰富设置
@@ -25,8 +22,9 @@
 - **不透明度**：10% - 100% 可调节
 - **滚动速度**：5s - 20s 可调节
 - **弹幕密度**：25% / 50% / 75% / 100% 可选
-- **屏幕高度**：控制弹幕显示区域
+- **屏幕高度**：控制弹幕显示区域（20% - 100%）
 - **显示开关**：一键开关弹幕显示
+- 所有设置通过 `chrome.storage.local` 持久化，实时同步到播放页面
 
 ### 📋 弹幕预览
 - 加载后可预览所有弹幕列表
@@ -44,6 +42,8 @@
 3. 开启右上角的 **开发者模式**
 4. 点击 **加载已解压的扩展程序**
 5. 选择项目文件夹
+
+> 无需任何构建步骤，直接加载即可使用。
 
 ---
 
@@ -63,6 +63,7 @@
 - 一旦建立了频道映射，下次访问该频道的视频时会自动尝试匹配和加载弹幕
 - 匹配度 ≥ 80% 时自动加载
 - 匹配度较低时需要手动确认或搜索
+- 支持 YouTube SPA 页面导航自动检测，切换视频无需刷新
 
 ### 手动加载
 
@@ -76,15 +77,17 @@
 
 ```
 bili2You/
-├── manifest.json          # 扩展配置文件
-├── background.js          # 后台服务 (API 代理、自动匹配)
+├── manifest.json          # 扩展配置文件 (Manifest V3)
+├── background.js          # 后台服务 (API 代理、WBI 签名、Protobuf 解析、自动匹配)
 ├── popup/                 # 弹出页面
 │   ├── popup.html         # 弹出页面结构
-│   ├── popup.css          # 弹出页面样式
-│   └── popup.js           # 弹出页面逻辑
+│   ├── popup.css          # 弹出页面样式 (暗色主题)
+│   └── popup.js           # 弹出页面逻辑 (搜索、匹配、设置)
 ├── src/content/           # 内容脚本
-│   ├── youtube.js         # YouTube 页面弹幕注入
+│   ├── youtube.js         # YouTube 页面弹幕渲染与注入
 │   └── youtube.css        # 弹幕样式
+├── lib/
+│   └── opencc-t2cn.js     # 繁体转简体中文转换库
 └── icons/                 # 扩展图标
     ├── icon16.png
     ├── icon48.png
@@ -95,19 +98,50 @@ bili2You/
 
 ## 🔧 技术实现
 
-### API 调用
-- 使用 Bilibili 官方 API 搜索视频和获取弹幕
+### 架构概览
+
+```
+YouTube 页面 (Content Script)
+    ↕ chrome.runtime.sendMessage
+Background Service Worker
+    ↕ fetch (WBI 签名)
+Bilibili API
+    ↕
+Popup UI ↔ Background ↔ Content Script
+```
+
+### API 调用与鉴权
+- 使用 Bilibili 官方 API 搜索视频、UP主和获取弹幕
+- 实现 **WBI 签名系统**：通过 Bilibili 专有的置换表生成 `mixin_key`，对请求参数进行 MD5 签名（`w_rid`），签名密钥缓存 30 分钟
+- 内置纯 JavaScript MD5 哈希实现
 - 通过 Background Service Worker 代理请求，避免 CORS 限制
-- 实现请求重试机制，提高稳定性
+- 指数退避重试机制（最多 5 次：500ms → 1s → 2s → 4s → 8s）
+
+### 弹幕数据处理
+- 弹幕按 6 分钟分段获取（`seg.so` 接口）
+- 内置轻量级 **Protobuf 解析器**，解析 `DmSegMobileReply` 二进制格式
+- 提取弹幕时间、模式、字号、颜色、内容等字段
+- 按时间戳排序后应用密度过滤和时间偏移
 
 ### 弹幕渲染
-- 使用 `requestAnimationFrame` 实现流畅动画
+- 使用 `requestAnimationFrame` 实现 60fps 流畅动画
 - 轨道碰撞检测，避免弹幕重叠
-- 支持 deflate 压缩弹幕数据的解压
+- 每帧最多渲染 15 条弹幕，防止性能卡顿
+- 使用 `will-change` CSS 属性启用 GPU 加速
+- 文字阴影增强视频上的可读性
+- 仅活跃弹幕元素存在于 DOM 中，自动回收
 
-### 存储
-- 使用 `chrome.storage.local` 存储 UP主映射和用户设置
-- 设置实时同步到播放页面
+### 标题匹配算法
+- 清洗标题：移除括号、标签、特殊字符
+- 繁体→简体中文转换（通过 OpenCC）
+- 基于 Jaccard 相似度的词级 + 字符级双重匹配
+- 匹配阈值 ≥ 30% 展示，≥ 80% 自动加载
+
+### 状态管理与稳定性
+- 使用 `MutationObserver` 监听 YouTube SPA 页面导航
+- 加载版本号机制，防止旧请求覆盖新视频弹幕
+- 视频播放、暂停、跳转事件同步弹幕状态
+- `chrome.storage.local` 持久化 UP主映射与用户设置
 
 ---
 
@@ -118,8 +152,8 @@ bili2You/
 | `storage` | 存储 UP主映射和用户设置 |
 | `activeTab` | 获取当前标签页信息 |
 | `scripting` | 注入弹幕脚本到 YouTube 页面 |
-| `youtube.com` | 在 YouTube 页面上运行 |
-| `api.bilibili.com` | 调用 B站搜索 API |
+| `youtube.com` | 在 YouTube 页面上运行内容脚本 |
+| `api.bilibili.com` | 调用 B站搜索与视频信息 API |
 | `comment.bilibili.com` | 获取弹幕数据 |
 
 ---

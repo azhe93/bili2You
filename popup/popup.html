@@ -4,36 +4,111 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bili2You</title>
+    <title>Bili2You - B站弹幕同步</title>
     <link rel="stylesheet" href="popup.css">
+    <script>
+        // Mock chrome extension APIs for standalone browser preview/tweaking
+        if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+            window.chrome = {
+                tabs: {
+                    query: async () => [{ id: 1, url: 'https://www.youtube.com/watch?v=mock' }],
+                    sendMessage: async (tabId, message) => {
+                        if (message.action === 'getPageInfo') {
+                            return {
+                                channelName: 'Stanford University',
+                                videoTitle: '【4K双语/精制】斯坦福最火设计课：如何像设计师一样思考 and 生活 - Designing Your Life',
+                                videoId: 'mock_video_id'
+                            };
+                        }
+                    }
+                },
+                runtime: {
+                    sendMessage: async (message) => {
+                        console.log('Mock sendMessage:', message);
+                        if (message.action === 'searchUploaders') {
+                            return {
+                                results: [
+                                    { name: '斯坦福公开课', face: 'https://images.unsplash.com/photo-1570295999919-56ceb5ecca61?auto=format&fit=crop&w=100&h=100&q=80', fans: 125000 },
+                                    { name: 'Stanford_Design', face: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=100&h=100&q=80', fans: 34000 }
+                                ]
+                            };
+                        }
+                        if (message.action === 'searchVideos') {
+                            return {
+                                results: [
+                                    { title: '斯坦福设计课：如何像设计师一样思考和生活', pic: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=320&h=180&q=80', danmaku: 4521, bvid: 'BV1xx411c7xx' },
+                                    { title: '斯坦福大讲堂 - 重新设计你的生活', pic: 'https://images.unsplash.com/photo-1531403009284-440f080d1e12?auto=format&fit=crop&w=320&h=180&q=80', danmaku: 852, bvid: 'BV1xx411c7yy' }
+                                ]
+                            };
+                        }
+                        if (message.action === 'getVideoInfo') {
+                            return { cid: 12345, aid: 67890, duration: 3600 };
+                        }
+                        if (message.action === 'getDanmaku') {
+                            return { danmaku: [] };
+                        }
+                        return {};
+                    }
+                },
+                storage: {
+                    local: {
+                        get: async (keys) => {
+                            return {
+                                settings: {
+                                    offset: 0,
+                                    fontSize: 24,
+                                    opacity: 0.8,
+                                    speed: 10,
+                                    screenHeight: 80,
+                                    density: 0.5,
+                                    show: true
+                                },
+                                uploaderMappings: {}
+                            };
+                        },
+                        set: async (data) => {
+                            console.log('Mock storage.local.set:', data);
+                        }
+                    }
+                }
+            };
+        }
+    </script>
 </head>
 
 <body>
     <div class="container">
         <!-- Page Info Section (Auto-detected) -->
         <section id="pageInfoSection" class="page-info-section">
+            <div class="section-title">
+                <span>连接状态</span>
+                <span class="pulse-indicator"></span>
+            </div>
             <div class="page-info-row">
-                <span class="label">频道:</span>
+                <span class="label">当前频道</span>
                 <span id="channelName" class="value">检测中...</span>
             </div>
             <div class="page-info-row">
-                <span class="label">视频:</span>
+                <span class="label">当前视频</span>
                 <span id="videoTitle" class="value ellipsis">检测中...</span>
             </div>
         </section>
 
         <!-- Uploader Mapping Section -->
         <section id="uploaderSection" class="uploader-section hidden">
-            <h3 class="section-title">关联B站UP主</h3>
+            <h2 class="section-title">关联B站UP主</h2>
             <div id="uploaderMapping" class="uploader-mapping">
                 <div id="mappedUploader" class="mapped-uploader hidden">
-                    <img id="mappedUploaderAvatar" class="up-avatar" src="" alt="">
+                    <img id="mappedUploaderAvatar" class="up-avatar" src="" alt="avatar">
                     <span id="mappedUploaderName" class="up-name"></span>
                     <button id="changeUploader" class="btn-small">更换</button>
                 </div>
                 <div id="uploaderSearch" class="uploader-search">
                     <input type="text" id="uploaderSearchInput" placeholder="搜索B站UP主...">
-                    <button id="uploaderSearchBtn" class="btn-search-small">搜索</button>
+                    <button id="uploaderSearchBtn" class="btn-search-small">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        <span>搜索</span>
+                    </button>
                 </div>
                 <div id="uploaderResults" class="uploader-results hidden"></div>
             </div>
@@ -41,12 +116,13 @@
 
         <!-- Video Match Section -->
         <section id="videoMatchSection" class="video-match-section hidden">
-            <h3 class="section-title">
+            <h2 class="section-title">
                 <span>匹配视频</span>
                 <span id="matchStatus" class="match-status"></span>
-            </h3>
+            </h2>
+            
             <div id="matchedVideo" class="matched-video hidden">
-                <img id="matchedThumb" class="matched-thumb" src="" alt="">
+                <img id="matchedThumb" class="matched-thumb" src="" alt="thumbnail">
                 <div class="matched-info">
                     <div id="matchedTitle" class="matched-title"></div>
                     <div class="matched-meta">
@@ -56,19 +132,27 @@
                 </div>
                 <button id="changeVideo" class="btn-small">更换</button>
             </div>
+            
             <div id="videoSearch" class="video-search hidden">
                 <input type="text" id="videoSearchInput" placeholder="搜索B站视频...">
-                <button id="videoSearchBtn" class="btn-search-small">搜索</button>
+                <button id="videoSearchBtn" class="btn-search-small">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <span>搜索</span>
+                </button>
             </div>
+            
             <div id="videoResults" class="video-results hidden"></div>
-            <button id="loadDanmakuBtn" class="btn-primary hidden">加载弹幕</button>
-            <!-- Toggle Danmaku (moved out of settings for quick access) -->
-            <div class="setting-item setting-item-inline">
-                <label>显示弹幕</label>
-                <label class="switch">
-                    <input type="checkbox" id="showDanmaku" checked>
-                    <span class="slider"></span>
-                </label>
+            
+            <div class="action-row">
+                <button id="loadDanmakuBtn" class="btn-primary hidden">加载弹幕</button>
+                <!-- Toggle Danmaku (placed on the right side of the action button) -->
+                <div class="danmaku-toggle-inline">
+                    <span class="toggle-label">显示弹幕</span>
+                    <label class="switch">
+                        <input type="checkbox" id="showDanmaku" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
             </div>
         </section>
 
@@ -80,14 +164,16 @@
 
         <!-- Settings Section -->
         <section class="settings-section">
-            <h3 class="section-title">
-                <span>设置</span>
-                <button id="toggleSettings" class="btn-toggle">▼</button>
-            </h3>
+            <h2 class="section-title">
+                <span>个性化设置</span>
+                <button id="toggleSettings" class="btn-toggle" aria-label="Toggle settings">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </button>
+            </h2>
             <div id="settingsPanel" class="settings-panel hidden">
                 <!-- Time Offset -->
                 <div class="setting-item">
-                    <label>时间偏移</label>
+                    <label for="offsetInput">时间偏移</label>
                     <div class="offset-controls">
                         <button id="offsetMinus" class="btn-offset">-1s</button>
                         <input type="number" id="offsetInput" value="0" step="0.5">
@@ -97,48 +183,63 @@
 
                 <!-- Font Size -->
                 <div class="setting-item">
-                    <label>字体大小</label>
-                    <input type="range" id="fontSize" min="12" max="36" value="24">
-                    <span id="fontSizeValue">24px</span>
+                    <label for="fontSize">字体大小</label>
+                    <div class="slider-wrapper">
+                        <input type="range" id="fontSize" min="12" max="36" value="24">
+                        <span id="fontSizeValue" class="slider-value">24px</span>
+                    </div>
                 </div>
 
                 <!-- Opacity -->
                 <div class="setting-item">
-                    <label>不透明度</label>
-                    <input type="range" id="opacity" min="0.1" max="1" step="0.1" value="0.8">
-                    <span id="opacityValue">80%</span>
+                    <label for="opacity">不透明度</label>
+                    <div class="slider-wrapper">
+                        <input type="range" id="opacity" min="0.1" max="1" step="0.1" value="0.8">
+                        <span id="opacityValue" class="slider-value">80%</span>
+                    </div>
                 </div>
 
                 <!-- Speed -->
                 <div class="setting-item">
-                    <label>滚动速度</label>
-                    <input type="range" id="speed" min="5" max="20" value="10">
-                    <span id="speedValue">10s</span>
+                    <label for="speed">滚动速度</label>
+                    <div class="slider-wrapper">
+                        <input type="range" id="speed" min="5" max="20" value="10">
+                        <span id="speedValue" class="slider-value">10s</span>
+                    </div>
                 </div>
 
                 <!-- Screen Height -->
                 <div class="setting-item">
-                    <label>屏幕高度</label>
-                    <input type="range" id="screenHeight" min="20" max="100" step="10" value="80">
-                    <span id="screenHeightValue">80%</span>
+                    <label for="screenHeight">屏幕高度</label>
+                    <div class="slider-wrapper">
+                        <input type="range" id="screenHeight" min="20" max="100" step="10" value="80">
+                        <span id="screenHeightValue" class="slider-value">80%</span>
+                    </div>
                 </div>
 
                 <!-- Density -->
                 <div class="setting-item">
-                    <label>弹幕密度</label>
-                    <select id="density">
-                        <option value="1">全部</option>
-                        <option value="0.75">75%</option>
-                        <option value="0.5" selected>50%</option>
-                        <option value="0.25">25%</option>
-                    </select>
+                    <label for="density">弹幕密度</label>
+                    <div class="select-wrapper">
+                        <select id="density">
+                            <option value="1">全部</option>
+                            <option value="0.75">75%</option>
+                            <option value="0.5" selected>50%</option>
+                            <option value="0.25">25%</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         </section>
 
         <!-- Not on YouTube Message -->
         <div id="notYouTube" class="not-youtube hidden">
-            <p>请在 YouTube 视频页面使用此扩展</p>
+            <svg class="warning-icon" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                <line x1="12" y1="9" x2="12" y2="13"></line>
+                <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+            <p>请在 YouTube 视频播放页面使用此扩展</p>
         </div>
     </div>
 

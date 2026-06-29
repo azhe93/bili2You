@@ -41,6 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const loadingText = document.getElementById('loadingText');
 
     // DOM Elements - Settings
+    const settingsSection = document.querySelector('.settings-section');
     const toggleSettings = document.getElementById('toggleSettings');
     const settingsPanel = document.getElementById('settingsPanel');
     const offsetInput = document.getElementById('offsetInput');
@@ -131,6 +132,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         pageInfoSection.classList.add('hidden');
         uploaderSection.classList.add('hidden');
         videoMatchSection.classList.add('hidden');
+        settingsSection.classList.add('hidden');
         notYouTube.classList.remove('hidden');
     }
 
@@ -141,6 +143,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         pageInfoSection.classList.remove('hidden');
         uploaderSection.classList.remove('hidden');
+        settingsSection.classList.remove('hidden');
         notYouTube.classList.add('hidden');
 
         // Pre-fill search inputs (清理特殊字符)

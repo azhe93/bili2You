@@ -25,6 +25,8 @@
     let activeDanmaku = [];
     let tracks = []; // 弹幕轨道
     let animationFrameId = null;
+    let resizeObserver = null;
+    let fullscreenListenerAttached = false;
     let currentVideoId = null;
     // 最近一次向 background 派发 pageInfoReady 所用的标题：下次 URL 切换时作为"旧基线"，
     // 要求新的 DOM 标题必须与它不同才允许触发自动加载。用状态变量而非观察时刻的 DOM，
@@ -319,10 +321,16 @@
         updateTracks();
 
         // 监听全屏变化
-        document.addEventListener('fullscreenchange', onFullscreenChange);
+        if (!fullscreenListenerAttached) {
+            document.addEventListener('fullscreenchange', onFullscreenChange);
+            fullscreenListenerAttached = true;
+        }
 
         // 监听容器大小变化
-        const resizeObserver = new ResizeObserver(updateTracks);
+        if (resizeObserver) {
+            resizeObserver.disconnect();
+        }
+        resizeObserver = new ResizeObserver(updateTracks);
         resizeObserver.observe(playerContainer);
     }
 
@@ -465,7 +473,13 @@
         if (animationFrameId) return;
 
         function render() {
-            if (!isPlaying || !videoElement || !settings.show) {
+            animationFrameId = null;
+
+            if (!isPlaying || !videoElement) {
+                return;
+            }
+
+            if (!settings.show) {
                 animationFrameId = requestAnimationFrame(render);
                 return;
             }
@@ -517,7 +531,10 @@
 
     // 停止渲染循环
     function stopRenderLoop() {
-        // 不完全停止，只是暂停发射新弹幕
+        if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+        }
     }
 
     // 发射弹幕

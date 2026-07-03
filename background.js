@@ -372,30 +372,42 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === 'loadDanmakuToTab') {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]) {
-                chrome.tabs.sendMessage(tabs[0].id, {
-                    action: 'loadDanmaku',
-                    danmaku: request.danmaku,
-                    offset: request.offset || 0,
-                    videoId: request.videoId
-                });
+        (async () => {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (!tab || !tab.id) {
+                throw new Error('未找到当前活动标签页');
             }
+
+            const result = await chrome.tabs.sendMessage(tab.id, {
+                action: 'loadDanmaku',
+                danmaku: request.danmaku,
+                offset: request.offset || 0,
+                videoId: request.videoId
+            });
+
+            sendResponse(result || { success: true });
+        })().catch(error => {
+            sendResponse({ success: false, error: error.message });
         });
-        sendResponse({ success: true });
         return true;
     }
 
     if (request.action === 'updateSettings') {
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0]) {
-                chrome.tabs.sendMessage(tabs[0].id, {
-                    action: 'updateSettings',
-                    settings: request.settings
-                });
+        (async () => {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (!tab || !tab.id) {
+                throw new Error('未找到当前活动标签页');
             }
+
+            const result = await chrome.tabs.sendMessage(tab.id, {
+                action: 'updateSettings',
+                settings: request.settings
+            });
+
+            sendResponse(result || { success: true });
+        })().catch(error => {
+            sendResponse({ success: false, error: error.message });
         });
-        sendResponse({ success: true });
         return true;
     }
 

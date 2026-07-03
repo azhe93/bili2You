@@ -95,7 +95,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (hasLoadedState) {
                     const state = window._savedVideoState;
                     currentMatchedVideo = state.video;
-                    currentDanmaku = { length: state.danmakuCount }; // 仅用于显示数量
+                    currentDanmaku = null;
                     currentUploader = uploaderMappings[response.channelName];
                     console.log('Bili2You: Restored saved state for video', response.videoId);
                 }
@@ -112,7 +112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (hasLoadedState) {
                             const state = window._savedVideoState;
                             currentMatchedVideo = state.video;
-                            currentDanmaku = { length: state.danmakuCount };
+                            currentDanmaku = null;
                             currentUploader = uploaderMappings[retryResponse.channelName];
                         }
                         await checkUploaderMapping(retryResponse.channelName, hasLoadedState);
@@ -154,7 +154,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check if we have a cached uploader mapping
     async function checkUploaderMapping(channelName, skipAutoMatch = false) {
         // 如果当前视频已加载弹幕，直接显示已匹配的UP主和视频，不重新匹配
-        if (skipAutoMatch && currentDanmaku && currentMatchedVideo) {
+        if (skipAutoMatch && currentMatchedVideo) {
             if (currentUploader) {
                 displayMappedUploader(currentUploader);
             }
@@ -513,12 +513,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentDanmaku = danmakuData.danmaku;
 
             // Send to content script
-            await chrome.runtime.sendMessage({
+            const loadResult = await chrome.runtime.sendMessage({
                 action: 'loadDanmakuToTab',
                 danmaku: currentDanmaku,
                 offset: parseFloat(offsetInput.value) || 0,
                 videoId: currentPageInfo?.videoId
             });
+            if (loadResult && loadResult.success === false) {
+                throw new Error(loadResult.error || loadResult.reason || '弹幕未加载到当前页面');
+            }
 
             // Save current state
             await saveCurrentState();
@@ -613,13 +616,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function updateOffset() {
         const offset = parseFloat(offsetInput.value) || 0;
-        if (currentDanmaku) {
-            await chrome.runtime.sendMessage({
+        if (Array.isArray(currentDanmaku)) {
+            const loadResult = await chrome.runtime.sendMessage({
                 action: 'loadDanmakuToTab',
                 danmaku: currentDanmaku,
                 offset: offset,
                 videoId: currentPageInfo?.videoId
             });
+            if (loadResult && loadResult.success === false) {
+                console.warn('Bili2You: Failed to update offset on page', loadResult.error || loadResult.reason);
+            }
         }
         await saveSettings();
     }
@@ -694,7 +700,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function saveCurrentState() {
-        if (currentMatchedVideo && currentDanmaku && currentPageInfo) {
+        if (currentMatchedVideo && Array.isArray(currentDanmaku) && currentPageInfo) {
             await chrome.storage.local.set({
                 currentVideoState: {
                     videoId: currentPageInfo.videoId,

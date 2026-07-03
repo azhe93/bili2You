@@ -345,6 +345,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === 'searchVideosByUploader') {
+        if (!request.mid) {
+            sendResponse({ error: '缺少 UP 主 mid' });
+            return true;
+        }
+        searchBilibiliVideosByUploader(request.mid, request.keyword)
+            .then(sendResponse)
+            .catch(error => sendResponse({ error: error.message }));
+        return true;
+    }
+
     if (request.action === 'searchUploaders') {
         searchBilibiliUploaders(request.keyword)
             .then(sendResponse)
@@ -412,6 +423,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             tabLoadVersion[tabId] = (tabLoadVersion[tabId] || 0) + 1;
             console.log(`Bili2You: Cancelled in-flight auto-load for tab ${tabId}, new version ${tabLoadVersion[tabId]}`);
         }
+        sendResponse({ success: true });
+        return true;
+    }
+
+    if (request.action === 'urlChanged') {
         sendResponse({ success: true });
         return true;
     }

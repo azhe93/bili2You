@@ -201,11 +201,14 @@
 
             const pageInfo = extractPageInfo();
 
-            // 标题必须已从旧视频切换为新值，否则视为 DOM 陈旧状态
-            const titleReady = pageInfo.videoTitle && pageInfo.videoTitle !== previousTitle;
+            // 标题和频道已可读即可；若标题仍等于旧标题，短暂等待 DOM 稳定。
+            // 不能一直要求标题不同，因为不同 YouTube 视频可能使用相同标题。
+            const hasCompleteInfo = pageInfo.channelName && pageInfo.videoTitle && pageInfo.videoId === expectedVideoId;
+            const titleStillStale = previousTitle && pageInfo.videoTitle === previousTitle;
+            const pageInfoReady = hasCompleteInfo && (!titleStillStale || attempts >= 4);
 
             // 检查是否获取到完整信息，并且视频ID匹配
-            if (pageInfo.channelName && titleReady && pageInfo.videoId === expectedVideoId) {
+            if (pageInfoReady) {
                 console.log('Bili2You: Page info ready, sending for auto-load');
                 lastDispatchedTitle = pageInfo.videoTitle;
                 chrome.runtime.sendMessage({

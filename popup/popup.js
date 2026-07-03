@@ -65,6 +65,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     let currentDanmaku = null;
     let uploaderMappings = {}; // channelName -> biliUploader
 
+    chrome.runtime.onMessage.addListener((request) => {
+        if (request.action === 'urlChanged') {
+            currentPageInfo = null;
+            currentUploader = null;
+            currentMatchedVideo = null;
+            currentDanmaku = null;
+            initPage().catch(error => console.error('URL change refresh error:', error));
+        }
+    });
+
     // Initialize
     await loadSettings();
     await loadMappings();
@@ -331,13 +341,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             // 清理搜索关键词
             const cleanedTitle = sanitizeSearchKeyword(currentPageInfo.videoTitle);
-            const searchKeyword = `${currentUploader.name} ${cleanedTitle}`;
+            let response = { results: [] };
 
-            // Search for videos from this uploader
-            const response = await chrome.runtime.sendMessage({
-                action: 'searchVideos',
-                keyword: searchKeyword
-            });
+            if (currentUploader.mid) {
+                try {
+                    response = await chrome.runtime.sendMessage({
+                        action: 'searchVideosByUploader',
+                        mid: currentUploader.mid,
+                        keyword: cleanedTitle
+                    });
+                } catch (error) {
+                    console.warn('Uploader-scoped search failed:', error);
+                }
+            }
+
+            if (!response.results || response.results.length === 0) {
+                const searchKeyword = `${currentUploader.name} ${cleanedTitle}`;
+                response = await chrome.runtime.sendMessage({
+                    action: 'searchVideos',
+                    keyword: searchKeyword
+                });
+
+                if (currentUploader.mid && Array.isArray(response.results)) {
+                    response.results = response.results.filter(video => String(video.mid) === String(currentUploader.mid));
+                }
+            }
 
             if (response.error) {
                 throw new Error(response.error);
@@ -693,18 +721,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function updateOffset() {
         const offset = getOffsetValue();
+        await saveSettings();
+
         if (Array.isArray(currentDanmaku)) {
-            const loadResult = await chrome.runtime.sendMessage({
-                action: 'loadDanmakuToTab',
-                danmaku: currentDanmaku,
-                offset: offset,
-                videoId: currentPageInfo?.videoId
-            });
-            if (loadResult && loadResult.success === false) {
-                console.warn('Bili2You: Failed to update offset on page', loadResult.error || loadResult.reason);
+            try {
+                const loadResult = await chrome.runtime.sendMessage({
+                    action: 'loadDanmakuToTab',
+                    danmaku: currentDanmaku,
+                    offset: offset,
+                    videoId: currentPageInfo?.videoId
+                });
+                if (loadResult && loadResult.success === false) {
+                    console.warn('Bili2You: Failed to update offset on page', loadResult.error || loadResult.reason);
+                }
+            } catch (error) {
+                console.warn('Bili2You: Failed to update offset on page', error);
             }
         }
-        await saveSettings();
     }
 
     async function updateSettings() {
@@ -717,12 +750,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             show: showDanmaku.checked
         };
 
-        await chrome.runtime.sendMessage({
-            action: 'updateSettings',
-            settings: settings
-        });
-
         await saveSettings();
+
+        try {
+            const result = await chrome.runtime.sendMessage({
+                action: 'updateSettings',
+                settings: settings
+            });
+            if (result && result.success === false) {
+                console.warn('Bili2You: Failed to sync settings to page', result.error || result.reason);
+            }
+        } catch (error) {
+            console.warn('Bili2You: Failed to sync settings to page', error);
+        }
     }
 
     async function saveSettings() {

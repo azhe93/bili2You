@@ -36,7 +36,7 @@
     let autoLoadedForVideoId = null;
 
     // 初始化
-    function init() {
+    async function init() {
         console.log('Bili2You: Content script loaded');
 
         // 监听来自popup/background的消息
@@ -75,14 +75,14 @@
             return true;
         });
 
+        // 从storage加载设置
+        await loadSettingsFromStorage();
+
         // 观察DOM变化，等待视频播放器出现
         observeVideoPlayer();
 
         // 监听URL变化（YouTube SPA）
         observeUrlChange();
-
-        // 从storage加载设置
-        loadSettingsFromStorage();
 
         // 不在此做首次自动加载：等视频元素就绪且真正开始播放后，由 onPlay 触发。
         // 这样可以跳过 YouTube SPA 的 URL/DOM 切换竞态，拿到稳定的 channelName/videoTitle。
@@ -236,6 +236,10 @@
             const data = await chrome.storage.local.get(['settings']);
             if (data.settings) {
                 settings = { ...settings, ...data.settings };
+                updateTracks();
+                if (danmakuContainer) {
+                    danmakuContainer.style.display = settings.show ? 'block' : 'none';
+                }
             }
         } catch (e) {
             console.error('Bili2You: Failed to load settings', e);
@@ -309,6 +313,7 @@
       left: 0;
       width: 100%;
       height: 100%;
+      display: ${settings.show ? 'block' : 'none'};
       pointer-events: none;
       overflow: hidden;
       z-index: 30;
@@ -676,8 +681,8 @@
 
     // 启动
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
+        document.addEventListener('DOMContentLoaded', () => init().catch(e => console.error('Bili2You: Init failed', e)));
     } else {
-        init();
+        init().catch(e => console.error('Bili2You: Init failed', e));
     }
 })();

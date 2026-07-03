@@ -73,10 +73,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Check if on YouTube
     async function initPage() {
+        let tab;
         try {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-            if (!tab || !tab.url || !tab.url.includes('youtube.com/watch')) {
+            if (!tab || !isSupportedYouTubeWatchUrl(tab.url)) {
                 showNotYouTube();
                 return;
             }
@@ -104,18 +105,25 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 // Retry after a short delay
                 setTimeout(async () => {
-                    const retryResponse = await chrome.tabs.sendMessage(tab.id, { action: 'getPageInfo' });
-                    if (retryResponse && retryResponse.channelName) {
-                        currentPageInfo = retryResponse;
-                        displayPageInfo(retryResponse);
-                        const hasLoadedState = window._savedVideoState && window._savedVideoState.videoId === retryResponse.videoId;
-                        if (hasLoadedState) {
-                            const state = window._savedVideoState;
-                            currentMatchedVideo = state.video;
-                            currentDanmaku = null;
-                            currentUploader = uploaderMappings[retryResponse.channelName];
+                    try {
+                        const retryResponse = await chrome.tabs.sendMessage(tab.id, { action: 'getPageInfo' });
+                        if (retryResponse && retryResponse.channelName) {
+                            currentPageInfo = retryResponse;
+                            displayPageInfo(retryResponse);
+                            const hasLoadedState = window._savedVideoState && window._savedVideoState.videoId === retryResponse.videoId;
+                            if (hasLoadedState) {
+                                const state = window._savedVideoState;
+                                currentMatchedVideo = state.video;
+                                currentDanmaku = null;
+                                currentUploader = uploaderMappings[retryResponse.channelName];
+                            }
+                            await checkUploaderMapping(retryResponse.channelName, hasLoadedState);
+                        } else {
+                            showPageInfoUnavailable();
                         }
-                        await checkUploaderMapping(retryResponse.channelName, hasLoadedState);
+                    } catch (error) {
+                        console.error('Retry page info error:', error);
+                        showPageInfoUnavailable();
                     }
                 }, 1500);
             }
@@ -124,7 +132,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (error) {
             console.error('Init error:', error);
             hideLoading();
-            showNotYouTube();
+            if (tab && isSupportedYouTubeWatchUrl(tab.url)) {
+                showPageInfoUnavailable();
+            } else {
+                showNotYouTube();
+            }
         }
     }
 
@@ -176,11 +188,51 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function displayMappedUploader(uploader) {
-        mappedUploaderAvatar.src = uploader.face || '';
-        mappedUploaderAvatar.onerror = () => {
-            mappedUploaderAvatar.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect fill="%2300a1d6" width="32" height="32" rx="16"/><text x="16" y="22" text-anchor="middle" fill="white" font-size="16">👤</text></svg>';
+    function fallbackAvatarDataUrl(size = 32) {
+        return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}"><rect fill="%2300a1d6" width="${size}" height="${size}" rx="${size / 2}"/></svg>`;
+    }
+
+    function fallbackThumbDataUrl(width = 80, height = 50) {
+        return `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}"><rect fill="%23333" width="${width}" height="${height}"/></svg>`;
+    }
+
+    function setImageWithFallback(img, src, fallbackSrc) {
+        img.onerror = () => {
+            img.onerror = null;
+            img.src = fallbackSrc;
         };
+        img.src = src || fallbackSrc;
+    }
+
+    function getOffsetValue() {
+        const value = parseFloat(offsetInput.value);
+        return Number.isFinite(value) ? value : 0;
+    }
+
+    function isSupportedYouTubeWatchUrl(urlString) {
+        try {
+            const url = new URL(urlString);
+            return url.protocol === 'https:' &&
+                url.hostname === 'www.youtube.com' &&
+                url.pathname === '/watch' &&
+                url.searchParams.has('v');
+        } catch (error) {
+            return false;
+        }
+    }
+
+    function showPageInfoUnavailable() {
+        channelNameEl.textContent = '未检测到';
+        videoTitleEl.textContent = '请刷新页面后重试';
+        pageInfoSection.classList.remove('hidden');
+        uploaderSection.classList.add('hidden');
+        videoMatchSection.classList.add('hidden');
+        settingsSection.classList.remove('hidden');
+        notYouTube.classList.add('hidden');
+    }
+
+    function displayMappedUploader(uploader) {
+        setImageWithFallback(mappedUploaderAvatar, uploader.face, fallbackAvatarDataUrl(32));
         mappedUploaderName.textContent = uploader.name;
         mappedUploader.classList.remove('hidden');
         uploaderSearch.classList.add('hidden');
@@ -219,7 +271,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         uploaderResults.innerHTML = '';
 
         if (!results || results.length === 0) {
-            uploaderResults.innerHTML = '<div class="no-results">未找到UP主</div>';
+            const empty = document.createElement('div');
+            empty.className = 'no-results';
+            empty.textContent = '未找到UP主';
+            uploaderResults.appendChild(empty);
             uploaderResults.classList.remove('hidden');
             return;
         }
@@ -227,12 +282,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         results.slice(0, 5).forEach(uploader => {
             const item = document.createElement('div');
             item.className = 'uploader-item';
-            item.innerHTML = `
-                <img class="uploader-avatar" src="${uploader.face}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 28 28%22><rect fill=%22%2300a1d6%22 width=%2228%22 height=%2228%22 rx=%2214%22/></svg>'">
-                <span class="name">${escapeHtml(uploader.name)}</span>
-                <span class="fans">${formatNumber(uploader.fans)} 粉丝</span>
-            `;
 
+            const avatar = document.createElement('img');
+            avatar.className = 'uploader-avatar';
+            setImageWithFallback(avatar, uploader.face, fallbackAvatarDataUrl(28));
+
+            const name = document.createElement('span');
+            name.className = 'name';
+            name.textContent = uploader.name || '';
+
+            const fans = document.createElement('span');
+            fans.className = 'fans';
+            fans.textContent = `${formatNumber(uploader.fans)} 粉丝`;
+
+            item.append(avatar, name, fans);
             item.addEventListener('click', () => selectUploader(uploader));
             uploaderResults.appendChild(item);
         });
@@ -395,10 +458,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function displayMatchedVideo(video, score) {
-        matchedThumb.src = video.pic;
-        matchedThumb.onerror = () => {
-            matchedThumb.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 50"><rect fill="%23333" width="80" height="50"/></svg>';
-        };
+        setImageWithFallback(matchedThumb, video.pic, fallbackThumbDataUrl(80, 50));
         matchedTitle.textContent = video.title;
         matchedScore.textContent = `匹配度: ${Math.round(score * 100)}%`;
         matchedDanmaku.textContent = `💬 ${formatNumber(video.danmaku)}`;
@@ -453,7 +513,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         videoResults.innerHTML = '';
 
         if (!results || results.length === 0) {
-            videoResults.innerHTML = '<div class="no-results">未找到视频</div>';
+            const empty = document.createElement('div');
+            empty.className = 'no-results';
+            empty.textContent = '未找到视频';
+            videoResults.appendChild(empty);
             videoResults.classList.remove('hidden');
             return;
         }
@@ -461,14 +524,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         results.slice(0, 5).forEach(video => {
             const item = document.createElement('div');
             item.className = 'video-item';
-            item.innerHTML = `
-        <img class="video-thumb" src="${video.pic}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 40%22><rect fill=%22%23333%22 width=%2264%22 height=%2240%22/></svg>'">
-        <div class="video-info">
-          <div class="video-title">${escapeHtml(video.title)}</div>
-          <div class="video-meta">💬 ${formatNumber(video.danmaku)}</div>
-        </div>
-      `;
 
+            const thumb = document.createElement('img');
+            thumb.className = 'video-thumb';
+            setImageWithFallback(thumb, video.pic, fallbackThumbDataUrl(64, 40));
+
+            const info = document.createElement('div');
+            info.className = 'video-info';
+
+            const title = document.createElement('div');
+            title.className = 'video-title';
+            title.textContent = video.title || '';
+
+            const meta = document.createElement('div');
+            meta.className = 'video-meta';
+            meta.textContent = `💬 ${formatNumber(video.danmaku)}`;
+
+            info.append(title, meta);
+            item.append(thumb, info);
             item.addEventListener('click', () => selectVideo(video));
             videoResults.appendChild(item);
         });
@@ -491,7 +564,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Get video info to get cid
             const videoInfo = await chrome.runtime.sendMessage({
                 action: 'getVideoInfo',
-                bvid: currentMatchedVideo.bvid
+                bvid: currentMatchedVideo.bvid,
+                title: currentPageInfo?.videoTitle || ''
             });
 
             if (videoInfo.error) {
@@ -509,6 +583,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (danmakuData.error) {
                 throw new Error(danmakuData.error);
             }
+            if (!Array.isArray(danmakuData.danmaku) || danmakuData.danmaku.length === 0) {
+                throw new Error('未获取到弹幕，可能是该分 P 无弹幕或 B 站接口返回为空');
+            }
 
             currentDanmaku = danmakuData.danmaku;
 
@@ -516,7 +593,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const loadResult = await chrome.runtime.sendMessage({
                 action: 'loadDanmakuToTab',
                 danmaku: currentDanmaku,
-                offset: parseFloat(offsetInput.value) || 0,
+                offset: getOffsetValue(),
                 videoId: currentPageInfo?.videoId
             });
             if (loadResult && loadResult.success === false) {
@@ -569,12 +646,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Offset controls
     offsetMinus.addEventListener('click', () => {
-        offsetInput.value = parseFloat(offsetInput.value) - 1;
+        offsetInput.value = getOffsetValue() - 1;
         updateOffset();
     });
 
     offsetPlus.addEventListener('click', () => {
-        offsetInput.value = parseFloat(offsetInput.value) + 1;
+        offsetInput.value = getOffsetValue() + 1;
         updateOffset();
     });
 
@@ -615,7 +692,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function updateOffset() {
-        const offset = parseFloat(offsetInput.value) || 0;
+        const offset = getOffsetValue();
         if (Array.isArray(currentDanmaku)) {
             const loadResult = await chrome.runtime.sendMessage({
                 action: 'loadDanmakuToTab',
@@ -650,7 +727,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function saveSettings() {
         const settings = {
-            offset: parseFloat(offsetInput.value) || 0,
+            offset: getOffsetValue(),
             fontSize: parseInt(fontSize.value),
             opacity: parseFloat(opacity.value),
             speed: parseInt(speed.value),
@@ -726,12 +803,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (error) {
             console.error('Load current state error:', error);
         }
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
 
     function formatNumber(num) {

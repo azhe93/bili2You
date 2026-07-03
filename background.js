@@ -15,16 +15,11 @@ const INITIAL_DELAY = 500;
 // 每个 tab 的加载版本号，用于取消过期的弹幕加载请求
 const tabLoadVersion = {};
 
-const BILI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
 const BILI_HEADERS = {
-    'User-Agent': BILI_UA,
-    'Referer': 'https://www.bilibili.com/',
-    'Origin': 'https://www.bilibili.com'
+    'Accept': 'application/json, text/plain, */*'
 };
 const BILI_SEARCH_HEADERS = {
-    'User-Agent': BILI_UA,
-    'Referer': 'https://search.bilibili.com/',
-    'Origin': 'https://www.bilibili.com'
+    'Accept': 'application/json, text/plain, */*'
 };
 
 // ============ WBI 签名 ============
@@ -358,7 +353,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === 'getVideoInfo') {
-        getVideoInfo(request.bvid)
+        getVideoInfo(request.bvid, request.title)
             .then(sendResponse)
             .catch(error => sendResponse({ error: error.message }));
         return true;
@@ -508,7 +503,7 @@ async function tryAutoLoadDanmaku(tabId, pageInfo, version) {
         return { success: false, reason: 'low_score', score: bestMatch.score };
     }
 
-    const videoInfo = await getVideoInfo(bestMatch.video.bvid);
+    const videoInfo = await getVideoInfo(bestMatch.video.bvid, videoTitle);
     if (isStale()) return { success: false, reason: 'stale' };
 
     if (!videoInfo.cid) {
@@ -525,11 +520,24 @@ async function tryAutoLoadDanmaku(tabId, pageInfo, version) {
     console.log(`Bili2You: 自动加载 ${danmakuData.danmaku.length} 条弹幕`);
 
     const offset = settings.offset || 0;
-    await chrome.tabs.sendMessage(tabId, {
+    const loadResult = await chrome.tabs.sendMessage(tabId, {
         action: 'loadDanmaku',
         danmaku: danmakuData.danmaku,
         offset: offset,
         videoId: videoId
+    });
+
+    if (loadResult && loadResult.success === false) {
+        return { success: false, reason: loadResult.reason || 'load_failed', error: loadResult.error };
+    }
+
+    await chrome.storage.local.set({
+        currentVideoState: {
+            videoId: videoId,
+            video: bestMatch.video,
+            danmakuCount: danmakuData.danmaku.length,
+            timestamp: Date.now()
+        }
     });
 
     return {
@@ -713,8 +721,32 @@ async function searchBilibiliUploaders(keyword) {
     return { results };
 }
 
+function selectBestPage(videoData, targetTitle) {
+    const pages = Array.isArray(videoData.pages) ? videoData.pages : [];
+    if (pages.length === 0) return null;
+    if (pages.length === 1 || !targetTitle) return pages[0];
+
+    const cleanTarget = cleanTitle(targetTitle);
+    if (!cleanTarget) return pages[0];
+
+    let bestPage = pages[0];
+    let bestScore = 0;
+
+    for (const page of pages) {
+        const partTitle = page.part || '';
+        const candidates = [partTitle, `${videoData.title || ''} ${partTitle}`];
+        const score = Math.max(...candidates.map(candidate => calculateSimilarity(cleanTarget, cleanTitle(candidate))));
+        if (score > bestScore) {
+            bestScore = score;
+            bestPage = page;
+        }
+    }
+
+    return bestScore >= 0.2 ? bestPage : pages[0];
+}
+
 // 获取视频信息（aid/cid/duration）
-async function getVideoInfo(bvid) {
+async function getVideoInfo(bvid, targetTitle = '') {
     const url = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
     const response = await fetch(url, { headers: BILI_HEADERS });
     const data = await response.json();
@@ -723,13 +755,21 @@ async function getVideoInfo(bvid) {
         throw new Error(data.message || '获取视频信息失败');
     }
 
+    const selectedPage = selectBestPage(data.data, targetTitle);
+
     return {
         bvid: data.data.bvid,
         aid: data.data.aid,
-        cid: data.data.cid,
+        cid: selectedPage?.cid || data.data.cid,
         title: data.data.title,
-        duration: data.data.duration,
-        pages: data.data.pages
+        duration: selectedPage?.duration || data.data.duration,
+        pages: data.data.pages,
+        selectedPage: selectedPage ? {
+            page: selectedPage.page,
+            part: selectedPage.part,
+            cid: selectedPage.cid,
+            duration: selectedPage.duration
+        } : null
     };
 }
 

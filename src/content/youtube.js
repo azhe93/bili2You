@@ -99,11 +99,11 @@
 
         try {
             // 获取频道名称 - 多种选择器尝试
+            // 必须限制在 #owner 或 ytd-watch-metadata 等主视频容器内，防止匹配到侧边栏推荐视频
             const channelSelectors = [
-                '#channel-name a',
-                '#owner #channel-name yt-formatted-string a',
-                'ytd-channel-name yt-formatted-string a',
-                '#owner-name a',
+                'ytd-watch-metadata #owner ytd-channel-name a',
+                'ytd-watch-metadata #channel-name a',
+                '#owner #channel-name a',
                 'ytd-video-owner-renderer #channel-name a'
             ];
 
@@ -117,11 +117,12 @@
             }
 
             // 获取视频标题
+            // 必须限制在 ytd-watch-metadata 等主视频容器内，防止匹配到错误内容
             const titleSelectors = [
-                'h1.ytd-video-primary-info-renderer yt-formatted-string',
-                'h1.title yt-formatted-string',
-                '#title h1 yt-formatted-string',
-                'ytd-watch-metadata h1 yt-formatted-string'
+                'ytd-watch-metadata #title h1 yt-formatted-string',
+                'ytd-watch-metadata h1 yt-formatted-string',
+                '#above-the-fold #title h1 yt-formatted-string',
+                '#title h1 yt-formatted-string'
             ];
 
             for (const selector of titleSelectors) {

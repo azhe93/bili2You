@@ -326,7 +326,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         await autoMatchVideo();
     }
 
-    // Auto-match video by title
+    // 获取 UP 主最新投稿视频（最多10条）
+    async function fetchUploaderLatestVideos(mid) {
+        if (!mid) return [];
+        try {
+            const response = await chrome.runtime.sendMessage({
+                action: 'searchVideosByUploader',
+                mid: mid,
+                keyword: ''
+            });
+            if (response && Array.isArray(response.results)) {
+                return response.results.slice(0, 10);
+            }
+        } catch (error) {
+            console.warn('Fetch uploader latest videos failed:', error);
+        }
+        return [];
+    }
+
+    // Auto-match video by title - 仅在已关联 UP 主视频中查找
     async function autoMatchVideo() {
         if (!currentUploader || !currentPageInfo) return;
 
@@ -339,57 +357,61 @@ document.addEventListener('DOMContentLoaded', async () => {
         showLoading('搜索匹配视频...');
 
         try {
-            // 清理搜索关键词
+            // 清理搜索关键词，仅在当前UP主空间内搜索
             const cleanedTitle = sanitizeSearchKeyword(currentPageInfo.videoTitle);
-            let response = { results: [] };
+            let results = [];
 
             if (currentUploader.mid) {
                 try {
-                    response = await chrome.runtime.sendMessage({
+                    const response = await chrome.runtime.sendMessage({
                         action: 'searchVideosByUploader',
                         mid: currentUploader.mid,
                         keyword: cleanedTitle
                     });
+                    if (response && Array.isArray(response.results)) {
+                        results = response.results;
+                    }
                 } catch (error) {
                     console.warn('Uploader-scoped search failed:', error);
                 }
             }
 
-            if (!response.results || response.results.length === 0) {
-                const searchKeyword = `${currentUploader.name} ${cleanedTitle}`;
-                response = await chrome.runtime.sendMessage({
-                    action: 'searchVideos',
-                    keyword: searchKeyword
-                });
+            // 尝试在空间搜索结果中比对
+            let bestMatch = null;
+            if (results.length > 0) {
+                bestMatch = findBestMatch(currentPageInfo.videoTitle, results);
+            }
 
-                if (currentUploader.mid && Array.isArray(response.results)) {
-                    response.results = response.results.filter(video => String(video.mid) === String(currentUploader.mid));
+            // 如果空间关键词搜索未命中，获取最新10条视频进一步比对或展示
+            let latestVideos = [];
+            if (!bestMatch && currentUploader.mid) {
+                latestVideos = await fetchUploaderLatestVideos(currentUploader.mid);
+                if (latestVideos.length > 0) {
+                    bestMatch = findBestMatch(currentPageInfo.videoTitle, latestVideos);
                 }
             }
 
-            if (response.error) {
-                throw new Error(response.error);
-            }
+            if (bestMatch) {
+                currentMatchedVideo = bestMatch.video;
+                displayMatchedVideo(bestMatch.video, bestMatch.score);
 
-            if (response.results && response.results.length > 0) {
-                // Find best match by title similarity
-                const bestMatch = findBestMatch(currentPageInfo.videoTitle, response.results);
-
-                if (bestMatch) {
-                    currentMatchedVideo = bestMatch.video;
-                    displayMatchedVideo(bestMatch.video, bestMatch.score);
-
-                    // 如果匹配度很高(>=80%)，也自动加载
-                    if (bestMatch.score >= 0.8) {
-                        hideLoading();
-                        await loadDanmaku();
-                        return;
-                    }
-                } else {
-                    showVideoSearch();
+                // 如果匹配度很高(>=80%)，也自动加载
+                if (bestMatch.score >= 0.8) {
+                    hideLoading();
+                    await loadDanmaku();
+                    return;
                 }
             } else {
+                // 没有找到：列出最新10条视频供手动选择
+                if (latestVideos.length === 0 && currentUploader.mid) {
+                    latestVideos = await fetchUploaderLatestVideos(currentUploader.mid);
+                }
                 showVideoSearch();
+                if (latestVideos.length > 0) {
+                    displayVideoResults(latestVideos, '未自动匹配，请选择最新视频或搜索：');
+                } else {
+                    displayVideoResults([], '未找到视频');
+                }
             }
         } catch (error) {
             console.error('Auto-match error:', error);
@@ -508,18 +530,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         loadDanmakuBtn.classList.add('hidden');
     }
 
-    // Search videos manually
+    // Search videos manually - 仅在对应匹配的 UP 主视频中查找
     async function searchVideos(keyword) {
-        if (!keyword) return;
+        if (!currentUploader || !currentUploader.mid) {
+            videoResults.innerHTML = `<div class="error">请先关联B站UP主</div>`;
+            videoResults.classList.remove('hidden');
+            return;
+        }
 
-        showLoading('搜索视频...');
+        if (!keyword) {
+            // 搜索词为空时，直接显示最新10条视频
+            showLoading('获取最新视频...');
+            try {
+                const latestVideos = await fetchUploaderLatestVideos(currentUploader.mid);
+                displayVideoResults(latestVideos, '最新投稿视频 (点击选择):');
+            } catch (error) {
+                console.error('Fetch latest videos error:', error);
+                videoResults.innerHTML = `<div class="error">获取视频失败</div>`;
+                videoResults.classList.remove('hidden');
+            } finally {
+                hideLoading();
+            }
+            return;
+        }
+
+        showLoading('在UP主空间搜索视频...');
 
         // 清理搜索关键词
         const cleanedKeyword = sanitizeSearchKeyword(keyword);
 
         try {
             const response = await chrome.runtime.sendMessage({
-                action: 'searchVideos',
+                action: 'searchVideosByUploader',
+                mid: currentUploader.mid,
                 keyword: cleanedKeyword
             });
 
@@ -527,18 +570,37 @@ document.addEventListener('DOMContentLoaded', async () => {
                 throw new Error(response.error);
             }
 
-            displayVideoResults(response.results);
+            const results = response.results || [];
+            if (results.length > 0) {
+                displayVideoResults(results.slice(0, 10));
+            } else {
+                // 没有找到：列出最新的10条视频进行手动选择
+                const latestVideos = await fetchUploaderLatestVideos(currentUploader.mid);
+                displayVideoResults(latestVideos, '未找到相关视频，已显示最新10条视频:');
+            }
         } catch (error) {
             console.error('Search videos error:', error);
-            videoResults.innerHTML = `<div class="error">搜索失败</div>`;
-            videoResults.classList.remove('hidden');
+            try {
+                const latestVideos = await fetchUploaderLatestVideos(currentUploader.mid);
+                displayVideoResults(latestVideos, '搜索异常，已显示最新10条视频:');
+            } catch (e) {
+                videoResults.innerHTML = `<div class="error">搜索失败</div>`;
+                videoResults.classList.remove('hidden');
+            }
         } finally {
             hideLoading();
         }
     }
 
-    function displayVideoResults(results) {
+    function displayVideoResults(results, tipTitle) {
         videoResults.innerHTML = '';
+
+        if (tipTitle) {
+            const tip = document.createElement('div');
+            tip.className = 'results-header';
+            tip.textContent = tipTitle;
+            videoResults.appendChild(tip);
+        }
 
         if (!results || results.length === 0) {
             const empty = document.createElement('div');
@@ -549,7 +611,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        results.slice(0, 5).forEach(video => {
+        results.slice(0, 10).forEach(video => {
             const item = document.createElement('div');
             item.className = 'video-item';
 
@@ -562,7 +624,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const title = document.createElement('div');
             title.className = 'video-title';
-            title.textContent = video.title || '';
+            title.textContent = (video.title || '').replace(/<[^>]+>/g, '');
+            title.title = title.textContent;
 
             const meta = document.createElement('div');
             meta.className = 'video-meta';
@@ -658,11 +721,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (e.key === 'Enter') searchVideos(videoSearchInput.value);
     });
 
-    changeVideo.addEventListener('click', () => {
+    changeVideo.addEventListener('click', async () => {
         matchedVideo.classList.add('hidden');
         videoSearch.classList.remove('hidden');
         loadDanmakuBtn.classList.add('hidden');
         currentMatchedVideo = null;
+        matchStatus.textContent = '未匹配';
+        matchStatus.className = 'match-status';
+
+        if (currentUploader && currentUploader.mid) {
+            showLoading('获取最新视频...');
+            try {
+                const latestVideos = await fetchUploaderLatestVideos(currentUploader.mid);
+                displayVideoResults(latestVideos, '最新投稿视频 (点击选择):');
+            } catch (error) {
+                console.error('Change video load error:', error);
+            } finally {
+                hideLoading();
+            }
+        }
     });
 
     loadDanmakuBtn.addEventListener('click', loadDanmaku);

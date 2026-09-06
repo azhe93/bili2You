@@ -20,10 +20,12 @@
     let danmakuContainer = null;
     let videoElement = null;
     let isPlaying = false;
-    let lastTime = 0;
     let danmakuIndex = 0;
     let activeDanmaku = [];
-    let tracks = []; // 弹幕轨道
+    // 轨道：滚动弹幕、顶部固定、底部固定，endVideoTime 均以视频时间轴（秒）计
+    let scrollTracks = [];
+    let topTracks = [];
+    let bottomTracks = [];
     let animationFrameId = null;
     let resizeObserver = null;
     let fullscreenListenerAttached = false;
@@ -145,41 +147,60 @@
     }
 
     // 监听URL变化
+    // 不再用 document.body 的 subtree MutationObserver（YouTube DOM 抖动会把回调打成噪声）。
+    // 改为：patch history.pushState / replaceState，加上 popstate；YouTube SPA 切页正好走这些 API。
     function observeUrlChange() {
         let lastUrl = location.href;
 
-        const observer = new MutationObserver(() => {
-            if (location.href !== lastUrl) {
-                lastUrl = location.href;
-                console.log('Bili2You: URL changed, resetting...');
+        function onUrlMaybeChanged() {
+            if (location.href === lastUrl) return;
+            lastUrl = location.href;
+            console.log('Bili2You: URL changed, resetting...');
 
-                // 清除现有弹幕
-                clearActiveDanmaku();
-                danmakuList = [];
-                danmakuIndex = 0;
+            // 清除现有弹幕
+            clearActiveDanmaku();
+            danmakuList = [];
+            danmakuIndex = 0;
 
-                // 检查新的视频ID
-                const url = new URL(location.href);
-                const newVideoId = url.searchParams.get('v');
+            // 视频元素可能被重建，重挂视频事件
+            observeVideoPlayer();
 
-                if (newVideoId && newVideoId !== currentVideoId) {
-                    currentVideoId = newVideoId;
+            // 检查新的视频ID
+            const url = new URL(location.href);
+            const newVideoId = url.searchParams.get('v');
 
-                    // 立即通知 background 取消任何进行中的旧弹幕加载请求
-                    chrome.runtime.sendMessage({ action: 'cancelAutoLoad' }).catch(() => { });
+            if (newVideoId && newVideoId !== currentVideoId) {
+                currentVideoId = newVideoId;
 
-                    // 通知popup页面URL变化
-                    chrome.runtime.sendMessage({
-                        action: 'urlChanged',
-                        videoId: newVideoId
-                    }).catch(() => { });
+                // 立即通知 background 取消任何进行中的旧弹幕加载请求
+                chrome.runtime.sendMessage({ action: 'cancelAutoLoad' }).catch(() => { });
 
-                    // 不在此启动搜索+加载流程：等 onPlay 里"视频真正开始播放"时再触发
-                }
+                // 通知popup页面URL变化
+                chrome.runtime.sendMessage({
+                    action: 'urlChanged',
+                    videoId: newVideoId
+                }).catch(() => { });
+
+                // 不在此启动搜索+加载流程：等 onPlay 里"视频真正开始播放"时再触发
             }
-        });
+        }
 
-        observer.observe(document.body, { childList: true, subtree: true });
+        // 补丁 history API：YouTube SPA 用 pushState 切页
+        const origPush = history.pushState;
+        const origReplace = history.replaceState;
+        history.pushState = function (...args) {
+            const ret = origPush.apply(this, args);
+            queueMicrotask(onUrlMaybeChanged);
+            return ret;
+        };
+        history.replaceState = function (...args) {
+            const ret = origReplace.apply(this, args);
+            queueMicrotask(onUrlMaybeChanged);
+            return ret;
+        };
+        window.addEventListener('popstate', onUrlMaybeChanged);
+        // YouTube 触发的自定义事件：yt-navigate-finish；在部分场景下 pushState 之外还会触发
+        window.addEventListener('yt-navigate-finish', onUrlMaybeChanged);
     }
 
     // 等待页面信息更新并自动加载弹幕
@@ -251,21 +272,34 @@
     }
 
     // 观察视频播放器
+    // YouTube 会重建 <video> 节点，但一旦拿到本次视频元素就足够；短轮询在 SPA 切换时补齐后续新元素。
+    let videoObserver = null;
     function observeVideoPlayer() {
         // 尝试立即获取视频元素
         checkVideoPlayer();
 
-        // 使用MutationObserver监听DOM变化
-        const observer = new MutationObserver(() => {
+        if (videoObserver) {
+            videoObserver.disconnect();
+            videoObserver = null;
+        }
+
+        // 只在没有视频元素时短时间观察，找到后立刻断开，避免 YouTube 页面上常驻 subtree 观察器
+        videoObserver = new MutationObserver(() => {
             if (!videoElement || !document.contains(videoElement)) {
                 checkVideoPlayer();
+                if (videoElement && videoObserver) {
+                    videoObserver.disconnect();
+                    videoObserver = null;
+                }
+            } else if (videoObserver) {
+                videoObserver.disconnect();
+                videoObserver = null;
             }
         });
 
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true
-        });
+        // 观察 #content 或 body，SPA 切换后 <video> 重建时再重新绑定
+        const target = document.querySelector('ytd-app') || document.body;
+        videoObserver.observe(target, { childList: true, subtree: true });
     }
 
     // 检查视频播放器
@@ -285,7 +319,7 @@
         videoElement.addEventListener('pause', onPause);
         videoElement.addEventListener('seeking', onSeeking);
         videoElement.addEventListener('seeked', onSeeked);
-        videoElement.addEventListener('timeupdate', onTimeUpdate);
+        // timeupdate 不再需要：渲染时钟已改用 videoElement.currentTime
 
         // 检查当前状态
         if (!videoElement.paused) {
@@ -343,22 +377,34 @@
         resizeObserver.observe(playerContainer);
     }
 
-    // 更新轨道
+    // 更新轨道（基于当前容器高度和字号）
+    // - scrollTracks：从顶部起排布，用于滚动弹幕
+    // - topTracks：从顶部预留区起，用于 mode=5 顶部固定
+    // - bottomTracks：从底部预留区起，用于 mode=4 底部固定
+    // 所有 endTime 使用视频时间轴（秒），暂停时天然停摆
     function updateTracks() {
         if (!danmakuContainer) return;
 
         const height = danmakuContainer.offsetHeight;
         const trackHeight = settings.fontSize + 4;
-        // 只使用上方 screenHeight% 的空间给滚动弹幕
         const ratio = Math.max(20, Math.min(100, settings.screenHeight || 80)) / 100;
-        const trackCount = Math.floor((height * ratio) / trackHeight);
 
-        tracks = [];
-        for (let i = 0; i < trackCount; i++) {
-            tracks.push({
-                y: i * trackHeight,
-                endTime: 0
-            });
+        const scrollCount = Math.max(1, Math.floor((height * ratio) / trackHeight));
+        // 顶部/底部固定弹幕最多各占 30% 的可用高度
+        const fixedCount = Math.max(1, Math.floor((height * 0.3) / trackHeight));
+
+        scrollTracks = [];
+        for (let i = 0; i < scrollCount; i++) {
+            scrollTracks.push({ y: i * trackHeight, endTime: 0 });
+        }
+        topTracks = [];
+        for (let i = 0; i < fixedCount; i++) {
+            topTracks.push({ y: 20 + i * trackHeight, endTime: 0 });
+        }
+        bottomTracks = [];
+        for (let i = 0; i < fixedCount; i++) {
+            // 从底部往上排：第 0 条最靠底
+            bottomTracks.push({ y: height - trackHeight - 20 - i * trackHeight, endTime: 0 });
         }
     }
 
@@ -434,12 +480,6 @@
         if (videoElement) {
             seekToTime(videoElement.currentTime, true); // skipPast = true, 跳过已过期弹幕
         }
-    }
-
-    // 时间更新
-    function onTimeUpdate() {
-        if (!videoElement) return;
-        lastTime = videoElement.currentTime;
     }
 
     // 跳转到指定时间
@@ -548,15 +588,16 @@
 
     // 发射弹幕
     function fireDanmaku(danmaku) {
-        if (!danmakuContainer || !settings.show) return;
+        if (!danmakuContainer || !settings.show || !videoElement) return;
 
         // 创建弹幕元素
         const element = document.createElement('div');
         element.className = 'bili2you-danmaku';
         element.textContent = danmaku.text;
 
-        // 颜色转换
-        const color = danmaku.color.toString(16).padStart(6, '0');
+        // 颜色转换：B 站默认弹幕颜色 0xffffff；解析出来的 0 视为"未设置"，回退到白色以免黑底不可见
+        const rawColor = (typeof danmaku.color === 'number' && danmaku.color > 0) ? danmaku.color : 0xffffff;
+        const color = rawColor.toString(16).padStart(6, '0');
 
         // 基础样式
         element.style.cssText = `
@@ -578,46 +619,45 @@
         const danmakuWidth = element.offsetWidth;
         const containerWidth = danmakuContainer.offsetWidth;
 
+        // 视频时间轴（秒）：所有 track 端点和 danmakuObj.startVideoTime 全部基于此
+        const nowVideo = videoElement.currentTime;
+
         // 根据模式设置位置和动画
         const mode = danmaku.mode;
-        let trackIndex = -1;
         let startX, endX, y;
-        const duration = settings.speed * 1000; // 转换为毫秒
+        const scrollDuration = Math.max(1, settings.speed); // 秒
+        const fixedDuration = 4; // 秒
 
-        if (mode === 4) {
-            // 底部弹幕
-            y = danmakuContainer.offsetHeight - settings.fontSize - 20;
+        if (mode === 4 || mode === 5) {
+            // 顶/底固定：为其分配独立的固定 track，避免相同 y 叠加
+            const trackArray = mode === 5 ? topTracks : bottomTracks;
+            let idx = -1;
+            for (let i = 0; i < trackArray.length; i++) {
+                if (trackArray[i].endTime <= nowVideo) { idx = i; break; }
+            }
+            if (idx === -1) idx = Math.floor(Math.random() * Math.max(1, trackArray.length));
+            const track = trackArray[idx] || { y: (mode === 5 ? 20 : danmakuContainer.offsetHeight - settings.fontSize - 20) };
+            y = track.y;
+            if (trackArray[idx]) trackArray[idx].endTime = nowVideo + fixedDuration;
+
             startX = (containerWidth - danmakuWidth) / 2;
             endX = startX;
-            trackIndex = -1;
-        } else if (mode === 5) {
-            // 顶部弹幕
-            y = 20;
-            startX = (containerWidth - danmakuWidth) / 2;
-            endX = startX;
-            trackIndex = -1;
         } else {
-            // 滚动弹幕
-            const now = Date.now();
-
-            // 寻找可用轨道
-            for (let i = 0; i < tracks.length; i++) {
-                if (tracks[i].endTime < now) {
-                    trackIndex = i;
-                    break;
-                }
+            // 滚动弹幕：找空闲轨道
+            let trackIndex = -1;
+            for (let i = 0; i < scrollTracks.length; i++) {
+                if (scrollTracks[i].endTime <= nowVideo) { trackIndex = i; break; }
             }
 
-            // 如果没有可用轨道，随机选择一个
             if (trackIndex === -1) {
-                trackIndex = Math.floor(Math.random() * tracks.length);
+                trackIndex = Math.floor(Math.random() * Math.max(1, scrollTracks.length));
             }
 
-            if (trackIndex >= 0 && trackIndex < tracks.length) {
-                y = tracks[trackIndex].y;
-                // 计算该弹幕离开屏幕右侧的时间
-                const travelTime = (containerWidth / (containerWidth + danmakuWidth)) * duration;
-                tracks[trackIndex].endTime = now + travelTime;
+            if (trackIndex >= 0 && trackIndex < scrollTracks.length) {
+                y = scrollTracks[trackIndex].y;
+                // 弹幕尾部离开屏幕左侧右边缘所需时间（视频秒）；用于确定该轨道下条可入场时间
+                const travelTime = (containerWidth / (containerWidth + danmakuWidth)) * scrollDuration;
+                scrollTracks[trackIndex].endTime = nowVideo + travelTime;
             } else {
                 const ratio = Math.max(20, Math.min(100, settings.screenHeight || 80)) / 100;
                 y = Math.random() * (danmakuContainer.offsetHeight * ratio);
@@ -631,12 +671,12 @@
         element.style.left = `${startX}px`;
         element.style.top = `${y}px`;
 
-        // 记录活动弹幕
+        // 记录活动弹幕（时钟基准：视频时间秒）
         const danmakuObj = {
             element,
             mode,
-            startTime: Date.now(),
-            duration: mode === 4 || mode === 5 ? 4000 : duration,
+            startVideoTime: nowVideo,
+            durationSec: (mode === 4 || mode === 5) ? fixedDuration : scrollDuration,
             startX,
             endX,
             y
@@ -645,17 +685,18 @@
         activeDanmaku.push(danmakuObj);
     }
 
-    // 更新活动弹幕
+    // 更新活动弹幕（视频时间驱动：暂停自动停摆、倍速自动匹配、seek 由外部 clearActiveDanmaku 处理）
     function updateActiveDanmaku() {
-        const now = Date.now();
+        if (!videoElement) return;
+        const nowVideo = videoElement.currentTime;
 
         for (let i = activeDanmaku.length - 1; i >= 0; i--) {
             const d = activeDanmaku[i];
-            const elapsed = now - d.startTime;
-            const progress = elapsed / d.duration;
+            const elapsed = nowVideo - d.startVideoTime;
+            const progress = d.durationSec > 0 ? elapsed / d.durationSec : 1;
 
-            if (progress >= 1) {
-                // 弹幕结束
+            if (progress >= 1 || progress < 0) {
+                // 弹幕结束或视频被后退到发射时刻之前
                 d.element.remove();
                 activeDanmaku.splice(i, 1);
                 continue;
@@ -679,8 +720,10 @@
         });
         activeDanmaku = [];
 
-        // 重置轨道
-        tracks.forEach(t => t.endTime = 0);
+        // 重置全部轨道
+        scrollTracks.forEach(t => t.endTime = 0);
+        topTracks.forEach(t => t.endTime = 0);
+        bottomTracks.forEach(t => t.endTime = 0);
     }
 
     // 启动

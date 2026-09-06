@@ -190,7 +190,7 @@ async function getWbiKeys() {
     if (wbiKeysCache.keys && Date.now() - wbiKeysCache.time < WBI_CACHE_TTL) {
         return wbiKeysCache.keys;
     }
-    const response = await fetch('https://api.bilibili.com/x/web-interface/nav', {
+    const response = await fetchWithRetry('https://api.bilibili.com/x/web-interface/nav', {
         headers: BILI_HEADERS
     });
     const data = await response.json();
@@ -294,12 +294,61 @@ async function fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
                 headers: { ...BILI_HEADERS, ...(options.headers || {}) }
             });
             if (!response.ok) {
+                // 4xx（除 429）通常无法通过重试自愈：交给调用方 / signedFetch 处理
+                if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+                    return response;
+                }
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
             return response;
         } catch (error) {
             lastError = error;
             console.log(`Bili2You: Attempt ${attempt}/${retries} failed - ${error.message}`);
+            if (attempt < retries) {
+                const delay = INITIAL_DELAY * Math.pow(2, attempt - 1);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+    throw lastError;
+}
+
+// 让 WBI 密钥缓存失效，用于 412（签名失败）后强制重取
+function invalidateWbiKeys() {
+    wbiKeysCache = { keys: null, time: 0 };
+}
+
+// 对 WBI 签名接口的统一 GET：签名 → 请求；遇到 412 自动清缓存 + 重签一次
+async function signedFetch(baseUrl, params, { headers = BILI_HEADERS, retries = MAX_RETRIES } = {}) {
+    let resignedOnce = false;
+    let lastError;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const wbi = await getWbiKeys();
+            const query = encWbi(params, wbi.img_key, wbi.sub_key);
+            const url = `${baseUrl}?${query}`;
+            const response = await fetch(url, { headers: { ...BILI_HEADERS, ...headers } });
+
+            if (response.status === 412) {
+                if (!resignedOnce) {
+                    console.log('Bili2You: WBI 签名失效(412)，清缓存后重签重试');
+                    invalidateWbiKeys();
+                    resignedOnce = true;
+                    continue;
+                }
+                // 已经重签过一次仍失败：视为不可恢复
+                throw new Error('HTTP 412: WBI 签名连续失败');
+            }
+            if (!response.ok) {
+                if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+                    return response;
+                }
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response;
+        } catch (error) {
+            lastError = error;
+            console.log(`Bili2You: signedFetch attempt ${attempt}/${retries} failed - ${error.message}`);
             if (attempt < retries) {
                 const delay = INITIAL_DELAY * Math.pow(2, attempt - 1);
                 await new Promise(r => setTimeout(r, delay));
@@ -480,20 +529,22 @@ async function tryAutoLoadDanmaku(tabId, pageInfo, version) {
 
     console.log(`Bili2You: 映射到 UP "${uploader.name}" (mid=${uploader.mid})`);
 
-    // 优先从 UP 主空间搜索；失败则降级为全站搜索
+    // 仅在 UP 主空间内搜索，不使用全站搜索以防混入其他 UP 主视频
     const titleForSearch = getBestTitlePart(videoTitle);
     let searchResult = { results: [] };
     try {
         if (uploader.mid) {
             searchResult = await searchBilibiliVideosByUploader(uploader.mid, titleForSearch);
         }
+        // 若关键词搜索无结果，拉取空间最新视频进行匹配
         if (!searchResult.results || searchResult.results.length === 0) {
-            console.log('Bili2You: 空间搜索无结果，降级为全站搜索');
-            searchResult = await searchBilibiliVideos(`${uploader.name} ${titleForSearch}`);
+            console.log('Bili2You: 空间关键词搜索无结果，尝试比对空间最新视频');
+            if (uploader.mid) {
+                searchResult = await searchBilibiliVideosByUploader(uploader.mid, '');
+            }
         }
     } catch (e) {
-        console.warn('Bili2You: 搜索失败，尝试全站搜索', e.message);
-        searchResult = await searchBilibiliVideos(`${uploader.name} ${titleForSearch}`);
+        console.warn('Bili2You: 空间搜索失败', e.message);
     }
 
     if (isStale()) return { success: false, reason: 'stale' };
@@ -502,12 +553,7 @@ async function tryAutoLoadDanmaku(tabId, pageInfo, version) {
         return { success: false, reason: 'no_match' };
     }
 
-    let bestMatch;
-    if (searchResult.results.length === 1) {
-        bestMatch = { video: searchResult.results[0], score: 1.0 };
-    } else {
-        bestMatch = findBestMatch(videoTitle, searchResult.results);
-    }
+    const bestMatch = findBestMatch(videoTitle, searchResult.results);
 
     if (!bestMatch) {
         return { success: false, reason: 'low_score' };
@@ -628,7 +674,6 @@ function characterSimilarity(str1, str2) {
 // 全站视频搜索（WBI 签名）
 async function searchBilibiliVideos(keyword) {
     const cleaned = cleanSearchKeyword(keyword);
-    const wbi = await getWbiKeys();
     const params = {
         search_type: 'video',
         keyword: cleaned,
@@ -638,10 +683,8 @@ async function searchBilibiliVideos(keyword) {
         tids: '',
         web_location: 1430654
     };
-    const query = encWbi(params, wbi.img_key, wbi.sub_key);
-    const url = `https://api.bilibili.com/x/web-interface/wbi/search/type?${query}`;
 
-    const response = await fetchWithRetry(url, { headers: BILI_SEARCH_HEADERS });
+    const response = await signedFetch('https://api.bilibili.com/x/web-interface/wbi/search/type', params, { headers: BILI_SEARCH_HEADERS });
     const data = await response.json();
 
     if (data.code !== 0) {
@@ -666,7 +709,6 @@ async function searchBilibiliVideos(keyword) {
 // 空间搜索：在指定 UP 的投稿中按关键词搜（WBI 签名）
 async function searchBilibiliVideosByUploader(mid, keyword) {
     const cleaned = cleanSearchKeyword(keyword);
-    const wbi = await getWbiKeys();
     const params = {
         mid: mid,
         ps: 30,
@@ -676,10 +718,8 @@ async function searchBilibiliVideosByUploader(mid, keyword) {
         order: 'pubdate',
         web_location: 1550101
     };
-    const query = encWbi(params, wbi.img_key, wbi.sub_key);
-    const url = `https://api.bilibili.com/x/space/wbi/arc/search?${query}`;
 
-    const response = await fetchWithRetry(url, { headers: BILI_HEADERS });
+    const response = await signedFetch('https://api.bilibili.com/x/space/wbi/arc/search', params, { headers: BILI_HEADERS });
     const data = await response.json();
 
     if (data.code !== 0) {
@@ -705,7 +745,6 @@ async function searchBilibiliVideosByUploader(mid, keyword) {
 
 // 搜索 UP 主（WBI 签名）
 async function searchBilibiliUploaders(keyword) {
-    const wbi = await getWbiKeys();
     const params = {
         search_type: 'bili_user',
         keyword: t2s(keyword || ''),
@@ -715,10 +754,8 @@ async function searchBilibiliUploaders(keyword) {
         user_type: '',
         web_location: 1430654
     };
-    const query = encWbi(params, wbi.img_key, wbi.sub_key);
-    const url = `https://api.bilibili.com/x/web-interface/wbi/search/type?${query}`;
 
-    const response = await fetchWithRetry(url, { headers: BILI_SEARCH_HEADERS });
+    const response = await signedFetch('https://api.bilibili.com/x/web-interface/wbi/search/type', params, { headers: BILI_SEARCH_HEADERS });
     const data = await response.json();
 
     if (data.code !== 0) {
@@ -764,11 +801,11 @@ function selectBestPage(videoData, targetTitle) {
 // 获取视频信息（aid/cid/duration）
 async function getVideoInfo(bvid, targetTitle = '') {
     const url = `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`;
-    const response = await fetch(url, { headers: BILI_HEADERS });
+    const response = await fetchWithRetry(url, { headers: BILI_HEADERS });
     const data = await response.json();
 
-    if (data.code !== 0) {
-        throw new Error(data.message || '获取视频信息失败');
+    if (!data || data.code !== 0 || !data.data) {
+        throw new Error((data && data.message) || '获取视频信息失败');
     }
 
     const selectedPage = selectBestPage(data.data, targetTitle);
@@ -793,12 +830,10 @@ async function getVideoInfo(bvid, targetTitle = '') {
 async function getDanmaku(cid, aid, duration) {
     if (!cid) throw new Error('缺少 cid');
 
-    const wbi = await getWbiKeys();
     const segDurationSec = 360; // 每段 6 分钟
     const segmentCount = Math.max(1, Math.ceil((Number(duration) || segDurationSec) / segDurationSec));
 
-    const all = [];
-    for (let i = 1; i <= segmentCount; i++) {
+    async function fetchSegment(i) {
         try {
             const params = {
                 type: 1,
@@ -807,21 +842,34 @@ async function getDanmaku(cid, aid, duration) {
                 pid: aid,
                 web_location: 1315873
             };
-            const query = encWbi(params, wbi.img_key, wbi.sub_key);
-            const url = `https://api.bilibili.com/x/v2/dm/wbi/web/seg.so?${query}`;
-            const response = await fetch(url, { headers: BILI_HEADERS });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const response = await signedFetch('https://api.bilibili.com/x/v2/dm/wbi/web/seg.so', params, { headers: BILI_HEADERS });
+            if (!response.ok) return [];
             const buffer = await response.arrayBuffer();
-            // 空段会返回 0 字节，直接跳过
-            if (buffer.byteLength === 0) continue;
-            const elems = parseDanmakuProto(buffer);
-            all.push(...elems);
-            if (i < segmentCount) {
-                await new Promise(r => setTimeout(r, 200));
-            }
+            if (buffer.byteLength === 0) return [];
+            return parseDanmakuProto(buffer);
         } catch (e) {
             console.warn(`Bili2You: 第 ${i} 段弹幕获取失败`, e.message);
+            return [];
         }
+    }
+
+    // 受控并发：同时最多 4 段，兼顾速度与限速风险
+    const indices = Array.from({ length: segmentCount }, (_, i) => i + 1);
+    const concurrency = Math.min(4, indices.length);
+    const results = new Array(indices.length);
+    let cursor = 0;
+    async function worker() {
+        while (true) {
+            const idx = cursor++;
+            if (idx >= indices.length) break;
+            results[idx] = await fetchSegment(indices[idx]);
+        }
+    }
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+    const all = [];
+    for (const segment of results) {
+        if (Array.isArray(segment)) all.push(...segment);
     }
 
     const danmaku = all
